@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir flask
+
+COPY flask_app/ ./flask_app/
+
+ENV PS_HOST=eq-ps
+ENV PS_PORT=50051
+ENV FLASK_PORT=5000
+
+EXPOSE 5000
+
+CMD ["python", "flask_app/app.py"]

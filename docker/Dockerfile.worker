@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY core/ ./core/
+COPY data_shards/ ./data_shards/
+
+RUN mkdir -p checkpoints outputs
+
+ENV PS_HOST=eq-ps
+ENV PS_PORT=50051
+ENV WORKER_ID=0
+
+EXPOSE 50052
+
+CMD python core/worker.py --id ${WORKER_ID} --data data_shards/shard_${WORKER_ID}.csv --epochs 20
