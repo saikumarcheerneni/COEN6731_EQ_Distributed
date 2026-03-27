@@ -1,0 +1,106 @@
+name: Build and Deploy to Azure
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  IMAGE_PS:     ${{ secrets.DOCKER_USERNAME }}/eq-ps
+  IMAGE_WORKER: ${{ secrets.DOCKER_USERNAME }}/eq-worker
+  IMAGE_WEB:    ${{ secrets.DOCKER_USERNAME }}/eq-web
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push PS
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ps
+          push: true
+          tags: ${{ env.IMAGE_PS }}:latest
+
+      - name: Build and push Worker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.worker
+          push: true
+          tags: ${{ env.IMAGE_WORKER }}:latest
+
+      - name: Build and push Web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.web
+          push: true
+          tags: ${{ env.IMAGE_WEB }}:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.PS_PUBLIC_IP }}      >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.WORKER1_PUBLIC_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.WEB_PUBLIC_IP }}     >> ~/.ssh/known_hosts
+
+      - name: Deploy PS + Worker0 to eq-ps VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.PS_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_PS }}:latest &&
+            docker pull ${{ env.IMAGE_WORKER }}:latest &&
+            docker stop eq-ps eq-worker0 || true &&
+            docker rm   eq-ps eq-worker0 || true &&
+            docker run -d --name eq-ps \
+              -p 50051:50051 \
+              -e NUM_WORKERS=2 \
+              -e PS_PORT=50051 \
+              -e LR=0.001 \
+              ${{ env.IMAGE_PS }}:latest &&
+            sleep 5 &&
+            docker run -d --name eq-worker0 \
+              -e WORKER_ID=0 \
+              -e PS_HOST=localhost \
+              -e PS_PORT=50051 \
+              ${{ env.IMAGE_WORKER }}:latest
+          "
+
+      - name: Deploy Worker1 to eq-worker1 VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.WORKER1_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_WORKER }}:latest &&
+            docker stop eq-worker1 || true &&
+            docker rm   eq-worker1 || true &&
+            docker run -d --name eq-worker1 \
+              -e WORKER_ID=1 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              ${{ env.IMAGE_WORKER }}:latest
+          "
+
+      - name: Deploy Web to eq-web VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.WEB_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_WEB }}:latest &&
+            docker stop eq-web || true &&
+            docker rm   eq-web || true &&
+            docker run -d --name eq-web \
+              -p 5000:5000 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              ${{ env.IMAGE_WEB }}:latest
+          "
