@@ -6,9 +6,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY core/ ./core/
-COPY data_shards/ ./data_shards/
 
-RUN mkdir -p checkpoints outputs
+RUN mkdir -p checkpoints outputs data_shards
 
 ENV PS_HOST=eq-ps
 ENV PS_PORT=50051

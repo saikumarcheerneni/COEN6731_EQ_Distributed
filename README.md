@@ -72,7 +72,7 @@ eq-web:     10.0.0.7  + public IP
 From your PC (PowerShell):
 ```powershell
 # Upload to PS VM
-scp -r C:\Users\saiku\Downloads\COEN6731_distml_v4_gossip\distml\* azureuser@<eq-ps-public-ip>:~/eq-distributed/
+scp -r C:\Users\saiku\Downloads\COEN6731_Azure_Deploy\eq-azure\* azureuser@<eq-ps-public-ip>:~/eq-distributed/
 
 # Upload to workers
 scp -r ... azureuser@<eq-worker0-public-ip>:~/eq-distributed/
