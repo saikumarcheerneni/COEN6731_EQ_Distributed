@@ -15,4 +15,4 @@ ENV WORKER_ID=0
 
 EXPOSE 50052
 
-CMD python core/worker.py --id ${WORKER_ID} --data data_shards/shard_${WORKER_ID}.csv --epochs 20
+CMD python core/worker.py --id ${WORKER_ID} --epochs 20
