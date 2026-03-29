@@ -72,7 +72,7 @@ jobs:
               -e LR=0.001 \
               -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
               ${{ env.IMAGE_PS }}:latest &&
-            sleep 5 &&
+            sleep 15 &&
             docker run -d --name eq-worker0 \
               -e WORKER_ID=0 \
               -e PS_HOST=localhost \

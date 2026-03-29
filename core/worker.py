@@ -7,7 +7,7 @@ import pandas as pd
 from pathlib import Path
 from azure.storage.blob import BlobServiceClient
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [W%(worker_id)s] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [WORKER] %(message)s", datefmt="%H:%M:%S")
 
 PS_HOST        = os.environ.get("PS_HOST", "localhost")
 PS_PORT        = int(os.environ.get("PS_PORT", 50051))
