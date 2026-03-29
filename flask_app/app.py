@@ -663,7 +663,8 @@ def upload_dataset():
 
         # Split and save shards locally + upload to Azure Blob
         blob_results = []
-        shards = np.array_split(df, num_workers)
+        shard_size = len(df) // num_workers
+        shards = [df.iloc[i*shard_size:(i+1)*shard_size if i < num_workers-1 else len(df)] for i in range(num_workers)]
         for i, shard in enumerate(shards):
             # Save locally
             local_path = DATA_SHARDS_DIR / f"shard_{i}.csv"
