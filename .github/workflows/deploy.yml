@@ -65,7 +65,9 @@ jobs:
             docker pull ${{ env.IMAGE_WORKER }}:latest &&
             docker stop eq-ps eq-worker0 || true &&
             docker rm   eq-ps eq-worker0 || true &&
+            docker network create eq-net || true &&
             docker run -d --name eq-ps \
+              --network eq-net \
               -p 50051:50051 \
               -e NUM_WORKERS=2 \
               -e PS_PORT=50051 \
@@ -74,8 +76,9 @@ jobs:
               ${{ env.IMAGE_PS }}:latest &&
             sleep 15 &&
             docker run -d --name eq-worker0 \
+              --network eq-net \
               -e WORKER_ID=0 \
-              -e PS_HOST=localhost \
+              -e PS_HOST=eq-ps \
               -e PS_PORT=50051 \
               -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
               ${{ env.IMAGE_WORKER }}:latest
