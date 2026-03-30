@@ -13,11 +13,14 @@ services:
       - NUM_WORKERS=2
       - LR=0.001
       - STRAGGLER_TIMEOUT=30
+      - MAX_ROUNDS=1000
     ports:
       - "50051:50051"
     networks:
       - eq-net
     restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
 
   # ── Worker 0 ──────────────────────────────────────
   eq-worker0:
@@ -37,6 +40,8 @@ services:
       - ./data_shards:/app/data_shards
       - ./outputs:/app/outputs
     restart: on-failure
+    mem_limit: 768m
+    memswap_limit: 768m
 
   # ── Worker 1 ──────────────────────────────────────
   eq-worker1:
@@ -56,6 +61,8 @@ services:
       - ./data_shards:/app/data_shards
       - ./outputs:/app/outputs
     restart: on-failure
+    mem_limit: 768m
+    memswap_limit: 768m
 
   # ── Flask Website ─────────────────────────────────
   eq-web:
@@ -74,6 +81,8 @@ services:
     networks:
       - eq-net
     restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
 
 networks:
   eq-net:

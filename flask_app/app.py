@@ -4,7 +4,7 @@ Live Earthquake Distributed Training Dashboard
 Enhanced: CSV Upload + Azure Blob Storage + PS vs Gossip Comparison
 """
 from flask import Flask, render_template_string, jsonify, request, redirect, url_for
-import json, socket, os, threading, time, csv, math, io
+import json, socket, os, time, csv, math
 from pathlib import Path
 from werkzeug.utils import secure_filename
 import numpy as np
@@ -12,15 +12,16 @@ import numpy as np
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
 
-PS_HOST        = os.environ.get("PS_HOST", "localhost")
-PS_PORT        = int(os.environ.get("PS_PORT", 50051))
-AZURE_CONN_STR = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
-CONTAINER_NAME = "eq-data"
-UPLOAD_DIR     = Path(os.environ.get("UPLOAD_DIR", "uploaded_data"))
+PS_HOST         = os.environ.get("PS_HOST", "localhost")
+PS_PORT         = int(os.environ.get("PS_PORT", 50051))
+AZURE_CONN_STR  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+CONTAINER_NAME  = "eq-data"
+UPLOAD_DIR      = Path(os.environ.get("UPLOAD_DIR", "uploaded_data"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 DATA_SHARDS_DIR = Path("data_shards")
 OUTPUTS_DIR     = Path("outputs")
 
+# ── PS helper — fixed buffer size + robust status handling ───────
 def ps_request(msg):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -29,21 +30,20 @@ def ps_request(msg):
             s.sendall(json.dumps(msg).encode())
             data = b""
             while True:
-                chunk = s.recv(4096)
+                chunk = s.recv(65536)          # was 4096
                 if not chunk: break
                 data += chunk
                 try: return json.loads(data.decode())
-                except: continue
+                except json.JSONDecodeError: continue
     except Exception as e:
         return {"error": str(e)}
 
 def upload_shard_to_blob(shard_df, shard_id):
-    """Upload a shard DataFrame to Azure Blob Storage"""
     try:
         from azure.storage.blob import BlobServiceClient
-        client  = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+        client    = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
         csv_bytes = shard_df.to_csv(index=False).encode()
-        blob = client.get_blob_client(container=CONTAINER_NAME, blob=f"shard_{shard_id}.csv")
+        blob      = client.get_blob_client(container=CONTAINER_NAME, blob=f"shard_{shard_id}.csv")
         blob.upload_blob(csv_bytes, overwrite=True)
         return True, f"shard_{shard_id}.csv uploaded to Azure Blob"
     except Exception as e:
@@ -93,7 +93,7 @@ def simulate_training(mode, n_workers=2, epochs=20, lr=0.001):
     y = X @ true_w + rng.normal(0, 0.1, N)
     shards_X = np.array_split(X, n_workers)
     shards_y = np.array_split(y, n_workers)
-    weights = [np.zeros(4) for _ in range(n_workers)]
+    weights  = [np.zeros(4) for _ in range(n_workers)]
     epoch_rmse = []
     t0 = time.time()
     for ep in range(epochs):
@@ -117,12 +117,12 @@ def simulate_training(mode, n_workers=2, epochs=20, lr=0.001):
             weights = new_w
         all_err = []
         for i in range(n_workers):
-            p = shards_X[i] @ weights[i] - shards_y[i]
-            all_err.extend(p.tolist())
+            p2 = shards_X[i] @ weights[i] - shards_y[i]
+            all_err.extend(p2.tolist())
         epoch_rmse.append(math.sqrt(np.mean(np.array(all_err) ** 2)))
     return list(range(1, epochs + 1)), epoch_rmse, time.time() - t0
 
-# ── Shared CSS ──────────────────────────────────────────────────
+# ── Shared CSS ───────────────────────────────────────────────────
 SHARED_CSS = """
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#060810;color:#cdd6f4;font-family:'Outfit',sans-serif;min-height:100vh;}
@@ -177,7 +177,9 @@ def nav_header(active="dashboard", status=None):
         if status.get("error"):
             status_html = '<span class="status-badge offline">● PS OFFLINE</span>'
         else:
-            status_html = f'<span class="status-badge online">● PS ONLINE — Round {status.get("round",0)}</span>'
+            mode_label = status.get("mode", "sync").upper()
+            done_label = " · DONE" if status.get("done") else ""
+            status_html = f'<span class="status-badge online">● PS ONLINE — Round {status.get("round",0)}/{status.get("max_rounds","?")} [{mode_label}{done_label}]</span>'
     return f"""<header>
   <div class="logo">🌍 EQ Distributed Training</div>
   <nav>
@@ -188,12 +190,12 @@ def nav_header(active="dashboard", status=None):
   <div>{status_html}</div>
 </header>"""
 
-# ── Dashboard HTML ──────────────────────────────────────────────
+# ── Dashboard HTML ───────────────────────────────────────────────
 DASHBOARD_HTML = """
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>🌍 EQ Distributed Training</title>
 {% if prediction is none %}
-<meta http-equiv="refresh" content="3">
+<meta http-equiv="refresh" content="5">
 {% endif %}
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Outfit:wght@400;700;900&display=swap" rel="stylesheet"/>
 <style>""" + SHARED_CSS + """
@@ -212,6 +214,7 @@ DASHBOARD_HTML = """
 .tag-training{background:rgba(0,255,157,0.1);color:#00ff9d;}
 .tag-idle{background:rgba(255,255,255,0.05);color:#45556e;}
 .tag-straggler{background:rgba(255,193,7,0.1);color:#ffc107;}
+.tag-done{background:rgba(0,229,255,0.1);color:#00e5ff;}
 </style></head><body>
 {{ nav | safe }}
 <div class="container">
@@ -228,6 +231,12 @@ DASHBOARD_HTML = """
     <a href="/" class="btn btn-reset">↺ REFRESH</a>
     {% if status.get('stragglers') %}
     <span style="color:#ffc107;font-size:0.8rem;margin-left:12px;">⚠️ Straggler workers: {{ status['stragglers'] }}</span>
+    {% endif %}
+    {% if status.get('done') %}
+    <span style="color:#00e5ff;font-size:0.8rem;margin-left:12px;">✅ Training complete — {{ status.get('round',0) }} rounds</span>
+    {% endif %}
+    {% if status.get('mode') %}
+    <span style="color:#45556e;font-size:0.75rem;font-family:'JetBrains Mono',monospace;margin-left:12px;">MODE: {{ status.get('mode','sync').upper() }}</span>
     {% endif %}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
@@ -288,6 +297,8 @@ DASHBOARD_HTML = """
         <div style="font-size:0.8rem;color:#45556e;margin-bottom:8px;">shard_{{ i }}.csv · VM {{ i+1 }}</div>
         {% if i in status.get('stragglers',[]) %}
           <span class="tag tag-straggler">STRAGGLER</span>
+        {% elif status.get('done') %}
+          <span class="tag tag-done">COMPLETE</span>
         {% elif status.get('round',0) > 0 %}
           <span class="tag tag-training">TRAINING</span>
         {% else %}
@@ -301,7 +312,7 @@ DASHBOARD_HTML = """
 </body></html>
 """
 
-# ── Upload HTML ─────────────────────────────────────────────────
+# ── Upload HTML ──────────────────────────────────────────────────
 UPLOAD_HTML = """
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>📤 Upload Dataset</title>
@@ -320,30 +331,24 @@ UPLOAD_HTML = """
 <div class="container">
   <h2 style="font-size:1.6rem;margin-bottom:8px;">📤 Upload Earthquake Dataset</h2>
   <p style="color:#45556e;font-size:0.85rem;margin-bottom:24px;">Upload CSV — system auto-splits into shards and stores in Azure Blob Storage for distributed training.</p>
-
   {% if azure_enabled %}
   <div class="storage-info">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
       <span class="azure-badge">☁ Azure Blob Storage</span>
       <span style="color:#00ff9d;font-size:0.8rem;">Connected</span>
     </div>
-    <div style="color:#45556e;font-size:0.8rem;">Shards will be uploaded to <span style="color:#60a5fa;">eqdistributed / eq-data</span> container. Workers automatically pull their shard on startup.</div>
+    <div style="color:#45556e;font-size:0.8rem;">Shards will be uploaded to <span style="color:#60a5fa;">eqdistributed / eq-data</span> container.</div>
   </div>
   {% else %}
-  <div class="info-msg">ℹ️ Azure Blob Storage not configured. Shards will be saved locally only. Add AZURE_STORAGE_CONNECTION_STRING to enable cloud storage.</div>
+  <div class="info-msg">ℹ️ Azure Blob Storage not configured. Shards will be saved locally only.</div>
   {% endif %}
-
   {% if success_msg %}<div class="success-msg">✅ {{ success_msg }}</div>{% endif %}
   {% if error_msg %}<div class="error-msg">❌ {{ error_msg }}</div>{% endif %}
   {% if blob_results %}
-  <div class="success-msg">
-    ☁ Azure Blob Upload Results:<br>
-    {% for r in blob_results %}
-    &nbsp;&nbsp;{{ r }}<br>
-    {% endfor %}
+  <div class="success-msg">☁ Azure Blob Upload Results:<br>
+    {% for r in blob_results %}&nbsp;&nbsp;{{ r }}<br>{% endfor %}
   </div>
   {% endif %}
-
   <div class="panel">
     <div class="panel-title">// UPLOAD NEW DATASET</div>
     <form method="POST" action="/upload" enctype="multipart/form-data">
@@ -370,7 +375,6 @@ UPLOAD_HTML = """
       {% endif %}
     </form>
   </div>
-
   <div class="panel">
     <div class="panel-title">// REQUIRED COLUMNS</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
@@ -380,7 +384,6 @@ UPLOAD_HTML = """
       <div style="background:#0c1120;border:1px solid #1a2a45;border-radius:8px;padding:12px;text-align:center;"><div class="yellow" style="font-weight:700;">Longitude</div><div style="color:#45556e;font-size:0.72rem;">coord · lon</div></div>
     </div>
   </div>
-
   {% if shards %}
   <div class="panel">
     <div class="panel-title">// CURRENT SHARDS</div>
@@ -389,9 +392,7 @@ UPLOAD_HTML = """
       <div class="shard-card">
         <div style="color:#00e5ff;font-family:'JetBrains Mono',monospace;font-size:0.8rem;font-weight:700;">📁 {{ shard.name }}</div>
         <div style="color:#45556e;font-size:0.75rem;margin-top:4px;">{{ shard.rows }} rows · {{ shard.size }}</div>
-        {% if azure_enabled %}
-        <div style="margin-top:6px;"><span class="azure-badge">☁ In Azure Blob</span></div>
-        {% endif %}
+        {% if azure_enabled %}<div style="margin-top:6px;"><span class="azure-badge">☁ In Azure Blob</span></div>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -400,7 +401,7 @@ UPLOAD_HTML = """
 </div></body></html>
 """
 
-# ── Compare HTML ────────────────────────────────────────────────
+# ── Compare HTML ─────────────────────────────────────────────────
 COMPARE_HTML = """
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>⚡ PS vs Gossip</title>
@@ -526,12 +527,13 @@ COMPARE_HTML = """
 </div></body></html>
 """
 
-# ── Routes ──────────────────────────────────────────────────────
+# ── Routes ───────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
+    elif "error" in status: status = {}
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -547,6 +549,7 @@ def predict():
     resp   = ps_request({"type": "get_weights"})
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
+    elif "error" in status: status = {}
     prediction = None
     pred_error = None
     if "weights" in resp:
@@ -565,6 +568,7 @@ def predict():
 def start_training():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
+    elif "error" in status: status = {}
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -574,6 +578,7 @@ def start_training():
 def stop_training():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
+    elif "error" in status: status = {}
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -590,8 +595,8 @@ def get_current_shards():
             try:
                 import pandas as pd
                 rows = len(pd.read_csv(f))
-            except: rows = "?"
-            size_kb = f.stat().st_size / 1024
+            except Exception: rows = "?"
+            size_kb  = f.stat().st_size / 1024
             size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb/1024:.1f} MB"
             shards.append({"name": f.name, "rows": rows, "size": size_str})
     return shards
@@ -620,10 +625,7 @@ def upload_dataset():
         filename = secure_filename(file.filename)
         filepath = UPLOAD_DIR / filename
         file.save(str(filepath))
-
         df = pd.read_csv(filepath)
-
-        # Auto-detect and rename columns
         col_map = {
             "Magnitude": ["mag", "magnitude"],
             "Depth":     ["depth"],
@@ -637,7 +639,6 @@ def upload_dataset():
                     rename[col] = target
                     break
         df = df.rename(columns=rename)
-
         needed  = ["Magnitude", "Depth", "Latitude", "Longitude"]
         missing = [c for c in needed if c not in df.columns]
         if missing:
@@ -645,48 +646,34 @@ def upload_dataset():
                 shards=get_current_shards(), azure_enabled=bool(AZURE_CONN_STR),
                 success_msg=None, blob_results=None,
                 error_msg=f"Missing columns: {', '.join(missing)}. Found: {list(df.columns)}")
-
         df = df[needed].dropna()
-
         max_rows = request.form.get("max_rows")
         if max_rows and max_rows.strip():
             df = df.iloc[:int(max_rows)]
-
         df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-
         num_workers = int(request.form.get("num_workers", 2))
         DATA_SHARDS_DIR.mkdir(exist_ok=True)
-
-        # Remove old shards
         for old in DATA_SHARDS_DIR.glob("shard_*.csv"):
             old.unlink()
-
-        # Split and save shards locally + upload to Azure Blob
         blob_results = []
-        shard_size = len(df) // num_workers
-        shards = [df.iloc[i*shard_size:(i+1)*shard_size if i < num_workers-1 else len(df)] for i in range(num_workers)]
+        indices = np.array_split(np.arange(len(df)), num_workers)
+        shards  = [df.iloc[idx] for idx in indices]
         for i, shard in enumerate(shards):
-            # Save locally
             local_path = DATA_SHARDS_DIR / f"shard_{i}.csv"
             shard.to_csv(local_path, index=False)
-
-            # Upload to Azure Blob Storage if configured
             if AZURE_CONN_STR:
                 success, msg = upload_shard_to_blob(shard, i)
                 if success:
                     blob_results.append(f"✅ shard_{i}.csv → Azure Blob ({len(shard):,} rows)")
                 else:
                     blob_results.append(f"⚠️ shard_{i}.csv saved locally only — Blob error: {msg}")
-
         success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"
         return render_template_string(UPLOAD_HTML,
             nav=nav_header("upload"),
             shards=get_current_shards(),
             azure_enabled=bool(AZURE_CONN_STR),
-            success_msg=success_msg,
-            error_msg=None,
+            success_msg=success_msg, error_msg=None,
             blob_results=blob_results if blob_results else None)
-
     except Exception as e:
         return render_template_string(UPLOAD_HTML, nav=nav_header("upload"),
             shards=get_current_shards(), azure_enabled=bool(AZURE_CONN_STR),

@@ -12,7 +12,9 @@ RUN mkdir -p checkpoints outputs data_shards
 ENV PS_HOST=eq-ps
 ENV PS_PORT=50051
 ENV WORKER_ID=0
+ENV EPOCHS=20
+ENV AZURE_STORAGE_CONNECTION_STRING=""
 
 EXPOSE 50052
 
-CMD python core/worker.py --id ${WORKER_ID} --epochs 20
+CMD python core/worker.py --id ${WORKER_ID} --epochs ${EPOCHS}
