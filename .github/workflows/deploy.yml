@@ -85,15 +85,7 @@ jobs:
             sleep 20 &&
 
             for i in 1 2 3 4 5; do
-              python3 -c \"
-import socket, json, sys
-try:
-    s = socket.socket(); s.settimeout(5)
-    s.connect(('localhost', 50051))
-    s.sendall(json.dumps({'type':'get_status'}).encode())
-    s.close(); sys.exit(0)
-except: sys.exit(1)
-\" && echo 'PS ready!' && break || echo \"PS not ready (attempt \$i)...\" && sleep 10
+              nc -z localhost 50051 && echo 'PS ready!' && break || echo "PS not ready (attempt $i)..." && sleep 10
             done &&
 
             docker run -d --name eq-worker0 \
