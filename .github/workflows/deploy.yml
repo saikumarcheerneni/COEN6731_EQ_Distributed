@@ -69,7 +69,7 @@ jobs:
 
             docker run -d --name eq-ps \
               --network eq-net \
-              --restart unless-stopped \
+              --restart always \
               --memory 512m \
               --memory-swap 512m \
               -p 50051:50051 \
@@ -90,7 +90,7 @@ jobs:
 
             docker run -d --name eq-worker0 \
               --network eq-net \
-              --restart on-failure \
+              --restart always \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=0 \
@@ -107,7 +107,7 @@ jobs:
             docker stop eq-worker1 2>/dev/null || true &&
             docker rm   eq-worker1 2>/dev/null || true &&
             docker run -d --name eq-worker1 \
-              --restart on-failure \
+              --restart always \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=1 \
@@ -124,10 +124,10 @@ jobs:
             docker stop eq-web 2>/dev/null || true &&
             docker rm   eq-web 2>/dev/null || true &&
             docker run -d --name eq-web \
-              --restart unless-stopped \
+              --restart always \
               --memory 256m \
               --memory-swap 256m \
-              -p 5000:5000 \
+              -p 80:5000 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
               -e FLASK_PORT=5000 \

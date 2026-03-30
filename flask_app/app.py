@@ -467,7 +467,7 @@ COMPARE_HTML = """
         <line x1="60" y1="{{ 20+i*55 }}" x2="780" y2="{{ 20+i*55 }}" stroke="#1a2a45" stroke-width="0.5"/>
         <text x="50" y="{{ 24+i*55 }}" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="end">{{ "%.3f"|format(y_max - i*(y_max-y_min)/4) }}</text>
         {% endfor %}
-        {% for i in range(0, num_epochs, max(1, num_epochs//5)) %}
+        {% for i in range(0, num_epochs, [1, num_epochs//5]|max) %}
         <text x="{{ 60+i*(720/(num_epochs-1)) }}" y="255" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
         {% endfor %}
         <polyline fill="none" stroke="#f97316" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
