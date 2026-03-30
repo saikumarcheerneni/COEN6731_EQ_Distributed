@@ -1,42 +1,136 @@
-- name: Deploy PS + Worker0 to eq-ps VM
-  run: |
-    ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.PS_PUBLIC_IP }} << 'EOF'
-      docker pull $IMAGE_PS:latest
-      docker pull $IMAGE_WORKER:latest
+name: Build and Deploy to Azure
 
-      docker stop eq-ps eq-worker0 2>/dev/null || true
-      docker rm   eq-ps eq-worker0 2>/dev/null || true
-      docker network create eq-net 2>/dev/null || true
+on:
+  push:
+    branches: [ main ]
 
-      docker run -d --name eq-ps \
-        --network eq-net \
-        --restart unless-stopped \
-        --memory 512m \
-        --memory-swap 512m \
-        -p 50051:50051 \
-        -e NUM_WORKERS=2 \
-        -e PS_PORT=50051 \
-        -e LR=0.001 \
-        -e STRAGGLER_TIMEOUT=30 \
-        -e MAX_ROUNDS=1000 \
-        -e AZURE_STORAGE_CONNECTION_STRING='$AZURE_STORAGE_CONNECTION_STRING' \
-        $IMAGE_PS:latest
+env:
+  IMAGE_PS:     ${{ secrets.DOCKER_USERNAME }}/eq-ps
+  IMAGE_WORKER: ${{ secrets.DOCKER_USERNAME }}/eq-worker
+  IMAGE_WEB:    ${{ secrets.DOCKER_USERNAME }}/eq-web
 
-      echo "Waiting for PS to be ready..."
-      sleep 20
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      for i in 1 2 3 4 5; do
-        nc -z localhost 50051 && echo "PS ready!" && break || echo "PS not ready (attempt $i)..." && sleep 10
-      done
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      docker run -d --name eq-worker0 \
-        --network eq-net \
-        --restart on-failure \
-        --memory 768m \
-        --memory-swap 768m \
-        -e WORKER_ID=0 \
-        -e PS_HOST=eq-ps \
-        -e PS_PORT=50051 \
-        -e AZURE_STORAGE_CONNECTION_STRING='$AZURE_STORAGE_CONNECTION_STRING' \
-        $IMAGE_WORKER:latest
-    EOF
+      - name: Build and push PS
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ps
+          push: true
+          tags: ${{ env.IMAGE_PS }}:latest
+
+      - name: Build and push Worker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.worker
+          push: true
+          tags: ${{ env.IMAGE_WORKER }}:latest
+
+      - name: Build and push Web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.web
+          push: true
+          tags: ${{ env.IMAGE_WEB }}:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.PS_PUBLIC_IP }}      >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.WORKER1_PUBLIC_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.WEB_PUBLIC_IP }}     >> ~/.ssh/known_hosts
+
+      - name: Deploy PS + Worker0 to eq-ps VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.PS_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_PS }}:latest &&
+            docker pull ${{ env.IMAGE_WORKER }}:latest &&
+            docker stop eq-ps eq-worker0 2>/dev/null || true &&
+            docker rm   eq-ps eq-worker0 2>/dev/null || true &&
+            docker network create eq-net 2>/dev/null || true &&
+
+            docker run -d --name eq-ps \
+              --network eq-net \
+              --restart unless-stopped \
+              --memory 512m \
+              --memory-swap 512m \
+              -p 50051:50051 \
+              -e NUM_WORKERS=2 \
+              -e PS_PORT=50051 \
+              -e LR=0.001 \
+              -e STRAGGLER_TIMEOUT=30 \
+              -e MAX_ROUNDS=1000 \
+              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              ${{ env.IMAGE_PS }}:latest &&
+
+            echo 'Waiting for PS to be ready...' &&
+            sleep 20 &&
+
+            for i in 1 2 3 4 5; do
+              nc -z localhost 50051 && echo 'PS ready!' && break || echo 'PS not ready (attempt '"$i"')...' && sleep 10
+            done &&
+
+            docker run -d --name eq-worker0 \
+              --network eq-net \
+              --restart on-failure \
+              --memory 768m \
+              --memory-swap 768m \
+              -e WORKER_ID=0 \
+              -e PS_HOST=eq-ps \
+              -e PS_PORT=50051 \
+              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              ${{ env.IMAGE_WORKER }}:latest
+          "
+
+      - name: Deploy Worker1 to eq-worker1 VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.WORKER1_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_WORKER }}:latest &&
+            docker stop eq-worker1 2>/dev/null || true &&
+            docker rm   eq-worker1 2>/dev/null || true &&
+            docker run -d --name eq-worker1 \
+              --restart on-failure \
+              --memory 768m \
+              --memory-swap 768m \
+              -e WORKER_ID=1 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              ${{ env.IMAGE_WORKER }}:latest
+          "
+
+      - name: Deploy Web to eq-web VM
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.WEB_PUBLIC_IP }} "
+            docker pull ${{ env.IMAGE_WEB }}:latest &&
+            docker stop eq-web 2>/dev/null || true &&
+            docker rm   eq-web 2>/dev/null || true &&
+            docker run -d --name eq-web \
+              --restart unless-stopped \
+              --memory 256m \
+              --memory-swap 256m \
+              -p 5000:5000 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              -e FLASK_PORT=5000 \
+              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              ${{ env.IMAGE_WEB }}:latest
+          "
