@@ -61,7 +61,26 @@ def load_csv_history(path):
     return epochs, rmses, losses
 
 def load_all_worker_histories():
-    """Load history for all workers separately for per-worker charts."""
+    """Load history — download from Azure Blob first, then read local files."""
+    # Try to download latest history from Azure Blob
+    if AZURE_CONN_STR:
+        try:
+            from azure.storage.blob import BlobServiceClient
+            client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+            OUTPUTS_DIR.mkdir(exist_ok=True)
+            for wid in range(4):
+                blob_name = f"worker_{wid}_history.csv"
+                try:
+                    blob = client.get_blob_client(
+                        container=CONTAINER_NAME, blob=blob_name)
+                    local_path = OUTPUTS_DIR / blob_name
+                    with open(local_path, "wb") as f:
+                        f.write(blob.download_blob().readall())
+                except Exception:
+                    pass  
+        except Exception:
+            pass
+
     workers = {}
     for wid in range(4):
         p = OUTPUTS_DIR / f"worker_{wid}_history.csv"

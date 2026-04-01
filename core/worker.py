@@ -18,10 +18,10 @@ CONTAINER_NAME = "eq-data"
 MAX_RECONNECT_WAIT = 60
 RECONNECT_BASE     = 2.0
 
+
 def download_shard_from_blob(worker_id):
     log        = logging.getLogger("W")
     local_path = f"data_shards/shard_{worker_id}.csv"
-
     if not AZURE_CONN_STR:
         log.info("No Azure connection string — using local shard")
         return local_path
@@ -31,7 +31,6 @@ def download_shard_from_blob(worker_id):
         client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
         blob   = client.get_blob_client(container=CONTAINER_NAME, blob=f"shard_{worker_id}.csv")
         Path("data_shards").mkdir(exist_ok=True)
-        # Always re-download — ensures workers use latest uploaded earthquake.csv
         with open(local_path, "wb") as f:
             f.write(blob.download_blob().readall())
         log.info(f"Downloaded shard_{worker_id}.csv from Azure Blob — ready to train on real data!")
@@ -43,30 +42,52 @@ def download_shard_from_blob(worker_id):
         log.warning(f"Blob download failed: {e} — falling back to local shard")
         return local_path
 
+
+def _upload_history_to_blob(worker_id, history_path):
+    """Upload worker history CSV to Azure Blob so dashboard can read it live."""
+    if not AZURE_CONN_STR:
+        return
+    try:
+        from azure.storage.blob import BlobServiceClient
+        client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+        blob   = client.get_blob_client(
+            container=CONTAINER_NAME,
+            blob=f"worker_{worker_id}_history.csv"
+        )
+        with open(history_path, "rb") as f:
+            blob.upload_blob(f, overwrite=True)
+        logging.getLogger("W").info(f"Uploaded worker_{worker_id}_history.csv to Azure Blob")
+    except Exception as e:
+        logging.getLogger("W").warning(f"Failed to upload history to Blob: {e}")
+
+
 def predict(X, w): return X @ w[:-1] + w[-1]
+
 
 def mse_gradients(X, y, w):
     err = predict(X, w) - y
     return np.append((2/len(y))*(X.T@err), (2/len(y))*err.sum()).astype(np.float32)
 
+
 def send_recv(host, port, msg, timeout=30):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(timeout)                  # was missing — hung forever on network drop
+        s.settimeout(timeout)
         s.connect((host, port))
         s.sendall(json.dumps(msg).encode())
         data = b""
         while True:
-            chunk = s.recv(65536)              # was 4096 — too small
+            chunk = s.recv(65536)
             if not chunk: break
             data += chunk
             try: return json.loads(data.decode())
             except json.JSONDecodeError: continue
     return {}
 
+
 def connect_to_ps(worker_id):
     """Retry PS connection forever with exponential backoff."""
-    log  = logging.getLogger("W")
-    wait = RECONNECT_BASE
+    log     = logging.getLogger("W")
+    wait    = RECONNECT_BASE
     attempt = 0
     while True:
         try:
@@ -80,10 +101,11 @@ def connect_to_ps(worker_id):
             time.sleep(wait)
             wait = min(wait * 1.5, MAX_RECONNECT_WAIT)
 
+
 def train(worker_id, epochs=20, batch_size=32, straggler_delay=0.0):
     log = logging.LoggerAdapter(logging.getLogger("W"), {"worker_id": worker_id})
 
-    # Download shard from Azure Blob (lazy — falls back to local)
+    # Download shard from Azure Blob
     data_path = download_shard_from_blob(worker_id)
 
     retries = 0
@@ -128,7 +150,7 @@ def train(worker_id, epochs=20, batch_size=32, straggler_delay=0.0):
             time.sleep(straggler_delay)
 
         idx = np.random.permutation(len(X))
-        Xs, ys   = X[idx], y[idx]
+        Xs, ys     = X[idx], y[idx]
         epoch_loss = 0.0
         batches    = math.ceil(len(Xs) / batch_size)
 
@@ -150,7 +172,7 @@ def train(worker_id, epochs=20, batch_size=32, straggler_delay=0.0):
                         "loss":      loss
                     })
                     w = np.array(resp["weights"], dtype=np.float32)
-                    # PS signals training is complete — exit cleanly
+                    # PS signals training complete — exit cleanly
                     if resp.get("done"):
                         log.info("PS signalled training done. Exiting.")
                         _save_outputs(worker_id, w, history)
@@ -169,14 +191,25 @@ def train(worker_id, epochs=20, batch_size=32, straggler_delay=0.0):
         # Checkpoint every epoch — survives container restart
         np.save(ckpt, {"epoch": epoch, "weights": w.tolist(), "history": history})
 
+        # Upload history to Azure Blob every epoch — live dashboard charts
+        out = Path("outputs"); out.mkdir(exist_ok=True)
+        history_path = out / f"worker_{worker_id}_history.csv"
+        pd.DataFrame(history).to_csv(history_path, index=False)
+        _upload_history_to_blob(worker_id, history_path)
+
     log.info(f"Training complete | final RMSE={rmse:.4f}")
     _save_outputs(worker_id, w, history)
     return w, history
 
+
 def _save_outputs(worker_id, w, history):
     out = Path("outputs"); out.mkdir(exist_ok=True)
-    pd.DataFrame(history).to_csv(out / f"worker_{worker_id}_history.csv", index=False)
-    np.save(out / f"worker_{worker_id}_weights.npy", w)   # needed for master aggregation
+    history_path = out / f"worker_{worker_id}_history.csv"
+    pd.DataFrame(history).to_csv(history_path, index=False)
+    np.save(out / f"worker_{worker_id}_weights.npy", w)
+    # Final upload to Azure Blob
+    _upload_history_to_blob(worker_id, history_path)
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
