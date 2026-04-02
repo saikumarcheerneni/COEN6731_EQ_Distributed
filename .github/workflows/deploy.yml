@@ -49,6 +49,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -57,6 +58,13 @@ jobs:
           ssh-keyscan -H ${{ secrets.PS_PUBLIC_IP }}      >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.WORKER1_PUBLIC_IP }} >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.WEB_PUBLIC_IP }}     >> ~/.ssh/known_hosts
+
+      - name: Copy connection string to all VMs
+        run: |
+          printf 'AZURE_STORAGE_CONNECTION_STRING=%s' '${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' > /tmp/az_conn.txt
+          scp -i ~/.ssh/id_rsa /tmp/az_conn.txt azureuser@${{ secrets.PS_PUBLIC_IP }}:/tmp/az_conn.txt
+          scp -i ~/.ssh/id_rsa /tmp/az_conn.txt azureuser@${{ secrets.WORKER1_PUBLIC_IP }}:/tmp/az_conn.txt
+          scp -i ~/.ssh/id_rsa /tmp/az_conn.txt azureuser@${{ secrets.WEB_PUBLIC_IP }}:/tmp/az_conn.txt
 
       - name: Deploy PS + Worker0 to eq-ps VM
         run: |
@@ -78,14 +86,14 @@ jobs:
               -e LR=0.001 \
               -e STRAGGLER_TIMEOUT=30 \
               -e MAX_ROUNDS=1000 \
-              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              --env-file /tmp/az_conn.txt \
               ${{ env.IMAGE_PS }}:latest &&
 
             echo 'Waiting for PS to be ready...' &&
             sleep 20 &&
 
             for i in 1 2 3 4 5; do
-              nc -z localhost 50051 && echo 'PS ready!' && break || echo 'PS not ready (attempt '"$i"')...' && sleep 10
+              nc -z localhost 50051 && echo 'PS ready!' && break || echo 'PS not ready, waiting...' && sleep 10
             done &&
 
             docker run -d --name eq-worker0 \
@@ -96,7 +104,7 @@ jobs:
               -e WORKER_ID=0 \
               -e PS_HOST=eq-ps \
               -e PS_PORT=50051 \
-              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              --env-file /tmp/az_conn.txt \
               ${{ env.IMAGE_WORKER }}:latest
           "
 
@@ -106,6 +114,7 @@ jobs:
             docker pull ${{ env.IMAGE_WORKER }}:latest &&
             docker stop eq-worker1 2>/dev/null || true &&
             docker rm   eq-worker1 2>/dev/null || true &&
+
             docker run -d --name eq-worker1 \
               --restart always \
               --memory 768m \
@@ -113,7 +122,7 @@ jobs:
               -e WORKER_ID=1 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
-              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              --env-file /tmp/az_conn.txt \
               ${{ env.IMAGE_WORKER }}:latest
           "
 
@@ -123,6 +132,7 @@ jobs:
             docker pull ${{ env.IMAGE_WEB }}:latest &&
             docker stop eq-web 2>/dev/null || true &&
             docker rm   eq-web 2>/dev/null || true &&
+
             docker run -d --name eq-web \
               --restart always \
               --memory 1g \
@@ -131,6 +141,6 @@ jobs:
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
               -e FLASK_PORT=5000 \
-              -e AZURE_STORAGE_CONNECTION_STRING='${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}' \
+              --env-file /tmp/az_conn.txt \
               ${{ env.IMAGE_WEB }}:latest
           "
