@@ -85,7 +85,7 @@ jobs:
               -e PS_PORT=50051 \
               -e LR=0.001 \
               -e STRAGGLER_TIMEOUT=30 \
-              -e MAX_ROUNDS=1000 \
+              -e MAX_ROUNDS=5000 \
               -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
               ${{ env.IMAGE_PS }}:latest &&
 
