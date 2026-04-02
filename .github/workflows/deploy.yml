@@ -98,7 +98,7 @@ jobs:
 
             docker run -d --name eq-worker0 \
               --network eq-net \
-              --restart always \
+              --restart on-failure \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=0 \
@@ -116,7 +116,7 @@ jobs:
             docker rm   eq-worker1 2>/dev/null || true &&
 
             docker run -d --name eq-worker1 \
-              --restart always \
+              --restart on-failure \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=1 \
