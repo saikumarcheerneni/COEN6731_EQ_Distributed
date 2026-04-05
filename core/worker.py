@@ -44,7 +44,6 @@ def download_shard_from_blob(worker_id):
 
 
 def _upload_history_to_blob(worker_id, history_path):
-    """Upload worker history CSV to Azure Blob so dashboard can read it live."""
     if not AZURE_CONN_STR:
         return
     try:
@@ -85,13 +84,17 @@ def send_recv(host, port, msg, timeout=30):
 
 
 def connect_to_ps(worker_id):
-    """Retry PS connection forever with exponential backoff."""
+    """Retry PS connection forever. Skip if PS is still in done state."""
     log     = logging.getLogger("W")
     wait    = RECONNECT_BASE
     attempt = 0
     while True:
         try:
             resp = send_recv(PS_HOST, PS_PORT, {"type": "get_weights"})
+            if resp.get("done"):
+                log.info("PS still in done state — waiting for reset...")
+                time.sleep(15)
+                continue
             w = np.array(resp["weights"], dtype=np.float32)
             log.info(f"Connected to PS at {PS_HOST}:{PS_PORT}")
             return w
@@ -102,9 +105,8 @@ def connect_to_ps(worker_id):
             wait = min(wait * 1.5, MAX_RECONNECT_WAIT)
 
 
-def train(worker_id, epochs=20, batch_size=256, straggler_delay=0.0):
-    # batch_size=256 instead of 32 — fewer batches per epoch
-    # so workers complete full epochs before PS hits MAX_ROUNDS
+def train_once(worker_id, epochs, batch_size, straggler_delay):
+    """Run one full training session. Always saves history."""
     log = logging.LoggerAdapter(logging.getLogger("W"), {"worker_id": worker_id})
 
     data_path = download_shard_from_blob(worker_id)
@@ -118,7 +120,7 @@ def train(worker_id, epochs=20, batch_size=256, straggler_delay=0.0):
 
     if not Path(data_path).exists():
         log.error(f"Shard file not found: {data_path}")
-        return
+        return False
 
     df = pd.read_csv(data_path).dropna()
     X  = df[["Depth", "Latitude", "Longitude"]].values.astype(np.float32)
@@ -126,23 +128,19 @@ def train(worker_id, epochs=20, batch_size=256, straggler_delay=0.0):
     X  = (X - X.mean(0)) / (X.std(0) + 1e-8)
     log.info(f"Loaded {len(df):,} rows from {data_path}")
 
+    # Clear old checkpoint — fresh training each session
     ckpt = CHECKPOINT_DIR / f"worker_{worker_id}.npy"
-    start_epoch = 0
     if ckpt.exists():
-        try:
-            state = np.load(ckpt, allow_pickle=True).item()
-            start_epoch = state.get("epoch", 0)
-            log.info(f"Resuming from checkpoint epoch {start_epoch}")
-        except Exception:
-            log.warning("Could not load checkpoint — starting fresh")
+        ckpt.unlink()
 
+    # Connect to PS — waits until PS is ready and not in done state
     w = connect_to_ps(worker_id)
 
-    rmse       = 0.0
-    history    = []
-    ps_done    = False
+    rmse    = 0.0
+    history = []
+    ps_done = False
 
-    for epoch in range(start_epoch + 1, epochs + 1):
+    for epoch in range(1, epochs + 1):
 
         if straggler_delay > 0:
             log.info(f"[STRAGGLER SIM] Sleeping {straggler_delay}s")
@@ -170,8 +168,7 @@ def train(worker_id, epochs=20, batch_size=256, straggler_delay=0.0):
                         "loss":      loss
                     })
                     w = np.array(resp["weights"], dtype=np.float32)
-                    # Mark done but DON'T exit mid-epoch
-                    # — finish the epoch first so history is saved
+                    # Mark done — but finish this epoch first
                     if resp.get("done"):
                         ps_done = True
                     break
@@ -180,29 +177,29 @@ def train(worker_id, epochs=20, batch_size=256, straggler_delay=0.0):
                     time.sleep(reconnect_wait)
                     reconnect_wait = min(reconnect_wait * 2, MAX_RECONNECT_WAIT)
 
-        # Epoch complete — save and upload
+        # Epoch complete
         avg_loss = epoch_loss / batches
         rmse     = float(np.sqrt(np.mean((predict(Xs, w) - ys)**2)))
         log.info(f"Epoch {epoch}/{epochs} | loss={avg_loss:.4f} | RMSE={rmse:.4f}")
         history.append({"epoch": epoch, "loss": avg_loss, "rmse": rmse})
 
-        # Checkpoint
+        # Save checkpoint
         np.save(ckpt, {"epoch": epoch, "weights": w.tolist(), "history": history})
 
-        # Upload history to Azure Blob after every epoch
+        # Upload history to Azure Blob after every epoch — feeds the charts
         out = Path("outputs"); out.mkdir(exist_ok=True)
         history_path = out / f"worker_{worker_id}_history.csv"
         pd.DataFrame(history).to_csv(history_path, index=False)
         _upload_history_to_blob(worker_id, history_path)
 
-        # Exit cleanly AFTER epoch is complete
+        # Exit cleanly after finishing this epoch
         if ps_done:
-            log.info("PS training complete — exiting after finishing epoch.")
+            log.info("PS training complete — saved history and exiting epoch loop.")
             break
 
-    log.info(f"Training complete | final RMSE={rmse:.4f}")
+    log.info(f"Session complete | final RMSE={rmse:.4f}")
     _save_outputs(worker_id, w, history)
-    return w, history
+    return True
 
 
 def _save_outputs(worker_id, w, history):
@@ -213,6 +210,45 @@ def _save_outputs(worker_id, w, history):
     _upload_history_to_blob(worker_id, history_path)
 
 
+def run_forever(worker_id, epochs, batch_size, straggler_delay):
+    """
+    Run training sessions forever.
+    After each session — wait for PS to restart then retrain.
+    This means VM restart = automatic retraining. No manual steps needed.
+    """
+    log     = logging.getLogger("W")
+    session = 0
+
+    while True:
+        session += 1
+        log.info(f"=== Training session {session} starting ===")
+
+        try:
+            train_once(worker_id, epochs, batch_size, straggler_delay)
+        except Exception as e:
+            log.error(f"Session {session} crashed: {e} — restarting in 30s")
+            time.sleep(30)
+            continue
+
+        log.info("Session complete. Waiting for PS to restart for next session...")
+
+        # Wait until PS resets (round goes back to 0 and done=False)
+        while True:
+            try:
+                resp = send_recv(PS_HOST, PS_PORT, {"type": "get_status"}, timeout=10)
+                data = resp.get("data", resp)
+                ps_done  = data.get("done", True)
+                ps_round = data.get("round", 0)
+                if not ps_done and ps_round == 0:
+                    log.info("PS has reset — starting new training session!")
+                    break
+                log.info(f"PS still done (round={ps_round}) — waiting 30s...")
+                time.sleep(30)
+            except Exception:
+                log.info("PS not reachable — waiting 15s...")
+                time.sleep(15)
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--id",              type=int,   default=int(os.environ.get("WORKER_ID", 0)))
@@ -220,4 +256,4 @@ if __name__ == "__main__":
     p.add_argument("--batch_size",      type=int,   default=256)
     p.add_argument("--straggler_delay", type=float, default=0.0)
     args = p.parse_args()
-    train(args.id, args.epochs, args.batch_size, args.straggler_delay)
+    run_forever(args.id, args.epochs, args.batch_size, args.straggler_delay)
