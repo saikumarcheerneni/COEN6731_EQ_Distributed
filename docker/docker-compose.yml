@@ -62,7 +62,7 @@ services:
     volumes:
       - ./data_shards:/app/data_shards
       - ./outputs:/app/outputs
-    restart: on-failure
+    restart: on-failure:5
     mem_limit: 768m
     memswap_limit: 768m
 

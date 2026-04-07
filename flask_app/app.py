@@ -1,10 +1,10 @@
 """
 flask_app/app.py
 Live Earthquake Distributed Training Dashboard
-Enhanced: CSV Upload + Azure Blob Storage + Training Analytics Charts + Latency
+Enhanced: CSV Upload + Azure Blob Storage + Training Analytics Charts + Latency + Sync/Async Toggle
 """
-from flask import Flask, render_template_string, jsonify, request, redirect, url_for
-import json, socket, os, time, csv, math
+from flask import Flask, render_template_string, jsonify, request, redirect
+import json, socket, os, csv
 from pathlib import Path
 from werkzeug.utils import secure_filename
 import numpy as np
@@ -55,7 +55,7 @@ def upload_shard_to_blob(shard_df, shard_id):
         csv_bytes = shard_df.to_csv(index=False).encode()
         blob      = client.get_blob_client(container=CONTAINER_NAME, blob=f"shard_{shard_id}.csv")
         blob.upload_blob(csv_bytes, overwrite=True)
-        return True, f"shard_{shard_id}.csv uploaded to Azure Blob"
+        return True, f"shard_{shard_id}.csv uploaded"
     except Exception as e:
         return False, str(e)
 
@@ -125,139 +125,45 @@ def load_ps_loss_history():
         return rounds, losses
     return [], []
 
-# ── Shared base styles ───────────────────────────────────────────
 BASE_CSS = """
 *{margin:0;padding:0;box-sizing:border-box;}
-body{
-  font-family:'Outfit',sans-serif;
-  color:#cdd6f4;
-  background:#060810;
-  min-height:100vh;
-  position:relative;
-  overflow-x:hidden;
-}
-body::before{
-  content:'';
-  position:fixed;inset:0;
-  background-image:
-    linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
-  background-size:44px 44px;
-  pointer-events:none;
-  z-index:0;
-}
-body::after{
-  content:'';
-  position:fixed;
-  top:-200px;left:-150px;
-  width:600px;height:600px;
-  background:radial-gradient(circle, rgba(0,229,255,0.04) 0%, transparent 65%);
-  pointer-events:none;
-  z-index:0;
-}
-.glow-br{
-  position:fixed;
-  bottom:-150px;right:-100px;
-  width:500px;height:500px;
-  background:radial-gradient(circle, rgba(0,255,157,0.04) 0%, transparent 65%);
-  pointer-events:none;
-  z-index:0;
-}
-header{
-  position:relative;z-index:10;
-  background:rgba(6,8,16,0.92);
-  border-bottom:0.5px solid rgba(0,229,255,0.1);
-  padding:14px 32px;
-  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-  backdrop-filter:blur(8px);
-}
-.logo{
-  font-size:1.3rem;font-weight:700;
-  background:linear-gradient(90deg,#00e5ff,#00ff9d);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
-}
+body{font-family:'Outfit',sans-serif;color:#cdd6f4;background:#060810;min-height:100vh;position:relative;overflow-x:hidden;}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,0.03) 1px,transparent 1px);background-size:44px 44px;pointer-events:none;z-index:0;}
+body::after{content:'';position:fixed;top:-200px;left:-150px;width:600px;height:600px;background:radial-gradient(circle,rgba(0,229,255,0.04) 0%,transparent 65%);pointer-events:none;z-index:0;}
+.glow-br{position:fixed;bottom:-150px;right:-100px;width:500px;height:500px;background:radial-gradient(circle,rgba(0,255,157,0.04) 0%,transparent 65%);pointer-events:none;z-index:0;}
+header{position:relative;z-index:10;background:rgba(6,8,16,0.92);border-bottom:0.5px solid rgba(0,229,255,0.1);padding:14px 32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;backdrop-filter:blur(8px);}
+.logo{font-size:1.3rem;font-weight:700;background:linear-gradient(90deg,#00e5ff,#00ff9d);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
 nav{display:flex;gap:6px;}
-nav a{
-  font-family:'JetBrains Mono',monospace;font-size:0.72rem;
-  padding:5px 14px;border-radius:8px;
-  border:0.5px solid rgba(0,229,255,0.12);
-  color:rgba(148,163,184,0.7);text-decoration:none;transition:all 0.2s;
-}
-nav a:hover,nav a.active{
-  border-color:rgba(0,229,255,0.4);
-  color:#00e5ff;
-  background:rgba(0,229,255,0.06);
-}
-.ps-badge{
-  font-family:'JetBrains Mono',monospace;font-size:0.7rem;
-  padding:4px 12px;border-radius:20px;
-}
+nav a{font-family:'JetBrains Mono',monospace;font-size:0.72rem;padding:5px 14px;border-radius:8px;border:0.5px solid rgba(0,229,255,0.12);color:rgba(148,163,184,0.7);text-decoration:none;transition:all 0.2s;}
+nav a:hover,nav a.active{border-color:rgba(0,229,255,0.4);color:#00e5ff;background:rgba(0,229,255,0.06);}
+.ps-badge{font-family:'JetBrains Mono',monospace;font-size:0.7rem;padding:4px 12px;border-radius:20px;}
 .ps-online{border:0.5px solid rgba(0,255,157,0.3);color:#00ff9d;background:rgba(0,255,157,0.06);}
 .ps-offline{border:0.5px solid rgba(255,23,68,0.3);color:#ff1744;background:rgba(255,23,68,0.06);}
 .container{max-width:1120px;margin:0 auto;padding:28px 24px;position:relative;z-index:1;}
-.section-tag{
-  display:inline-flex;align-items:center;gap:6px;
-  font-family:'JetBrains Mono',monospace;
-  font-size:10px;font-weight:500;letter-spacing:0.12em;
-  color:rgba(0,229,255,0.5);
-  background:rgba(0,229,255,0.06);
-  border:0.5px solid rgba(0,229,255,0.12);
-  border-radius:4px;padding:3px 8px;
-  margin-bottom:12px;
-  text-transform:uppercase;
-}
+.section-tag{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;letter-spacing:0.12em;color:rgba(0,229,255,0.5);background:rgba(0,229,255,0.06);border:0.5px solid rgba(0,229,255,0.12);border-radius:4px;padding:3px 8px;margin-bottom:12px;text-transform:uppercase;}
 .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:22px;}
-.metric{
-  background:rgba(12,17,32,0.8);
-  border:0.5px solid rgba(0,229,255,0.1);
-  border-radius:10px;padding:14px 16px;
-  backdrop-filter:blur(6px);
-}
+.metric{background:rgba(12,17,32,0.8);border:0.5px solid rgba(0,229,255,0.1);border-radius:10px;padding:14px 16px;backdrop-filter:blur(6px);}
 .metric-label{font-size:11px;color:rgba(148,163,184,0.6);margin-bottom:6px;font-family:'JetBrains Mono',monospace;}
 .metric-val{font-size:22px;font-weight:600;margin-bottom:3px;}
 .metric-sub{font-size:10px;color:rgba(148,163,184,0.35);}
-.panel{
-  background:rgba(12,17,32,0.75);
-  border:0.5px solid rgba(0,229,255,0.08);
-  border-radius:12px;padding:20px;
-  margin-bottom:16px;
-  backdrop-filter:blur(6px);
-}
-.panel-head{
-  font-family:'JetBrains Mono',monospace;
-  font-size:10px;font-weight:500;letter-spacing:0.1em;
-  color:rgba(0,229,255,0.4);
-  text-transform:uppercase;
-  margin-bottom:14px;
-  padding-bottom:10px;
-  border-bottom:0.5px solid rgba(0,229,255,0.07);
-}
-.btn{
-  display:inline-block;padding:10px 22px;border-radius:8px;border:none;cursor:pointer;
-  font-family:'JetBrains Mono',monospace;font-size:0.75rem;font-weight:600;
-  text-decoration:none;margin:4px 4px 4px 0;transition:all 0.2s;
-}
+.panel{background:rgba(12,17,32,0.75);border:0.5px solid rgba(0,229,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;backdrop-filter:blur(6px);}
+.panel-head{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;letter-spacing:0.1em;color:rgba(0,229,255,0.4);text-transform:uppercase;margin-bottom:14px;padding-bottom:10px;border-bottom:0.5px solid rgba(0,229,255,0.07);}
+.btn{display:inline-block;padding:10px 22px;border-radius:8px;border:none;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:0.75rem;font-weight:600;text-decoration:none;margin:4px 4px 4px 0;transition:all 0.2s;}
 .btn-start{background:linear-gradient(135deg,#0097a7,#00695c);color:#fff;}
 .btn-stop{background:rgba(255,23,68,0.1);border:0.5px solid rgba(255,23,68,0.3);color:#ff1744;}
 .btn-reset{background:rgba(255,255,255,0.04);border:0.5px solid rgba(0,229,255,0.15);color:rgba(148,163,184,0.8);}
 .btn-upload{background:linear-gradient(135deg,#6d28d9,#7c3aed);color:#fff;}
-input[type=number],input[type=file],select{
-  background:rgba(12,17,32,0.9);
-  border:0.5px solid rgba(0,229,255,0.15);
-  color:#cdd6f4;padding:9px 12px;border-radius:8px;
-  font-family:'JetBrains Mono',monospace;font-size:0.82rem;
-}
+.mode-toggle{display:inline-flex;align-items:center;background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.12);border-radius:8px;padding:3px;margin-left:10px;vertical-align:middle;}
+.mode-btn{font-family:'JetBrains Mono',monospace;font-size:0.68rem;font-weight:600;padding:5px 14px;border-radius:6px;border:none;cursor:pointer;background:transparent;color:rgba(148,163,184,0.4);text-decoration:none;transition:all 0.2s;}
+.mode-btn.active-sync{background:rgba(0,229,255,0.12);color:#00e5ff;}
+.mode-btn.active-async{background:rgba(167,139,250,0.12);color:#a78bfa;}
+input[type=number],input[type=file],select{background:rgba(12,17,32,0.9);border:0.5px solid rgba(0,229,255,0.15);color:#cdd6f4;padding:9px 12px;border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:0.82rem;}
 input[type=number],select{width:140px;}
 input[type=file]{width:100%;margin-bottom:12px;}
 .success-msg{background:rgba(0,255,157,0.06);border:0.5px solid rgba(0,255,157,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#00ff9d;font-size:0.82rem;}
 .error-msg{background:rgba(255,23,68,0.06);border:0.5px solid rgba(255,23,68,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#ff1744;font-size:0.82rem;}
 .info-msg{background:rgba(0,120,212,0.06);border:0.5px solid rgba(0,120,212,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#60a5fa;font-size:0.82rem;}
-.azure-badge{
-  display:inline-flex;align-items:center;gap:5px;
-  background:rgba(0,120,212,0.08);border:0.5px solid rgba(0,120,212,0.2);
-  border-radius:5px;padding:3px 8px;
-  font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#60a5fa;
-}
+.azure-badge{display:inline-flex;align-items:center;gap:5px;background:rgba(0,120,212,0.08);border:0.5px solid rgba(0,120,212,0.2);border-radius:5px;padding:3px 8px;font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#60a5fa;}
 .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:0.58rem;font-weight:600;}
 .tag-training{background:rgba(0,255,157,0.08);color:#00ff9d;border:0.5px solid rgba(0,255,157,0.2);}
 .tag-idle{background:rgba(255,255,255,0.04);color:rgba(148,163,184,0.5);border:0.5px solid rgba(255,255,255,0.06);}
@@ -275,7 +181,7 @@ def nav_header(active="dashboard", status=None):
         if status.get("error"):
             status_html = '<span class="ps-badge ps-offline">● PS OFFLINE</span>'
         else:
-            mode = status.get("mode","sync").upper()
+            mode = status.get("mode", "sync").upper()
             done = " · DONE" if status.get("done") else ""
             status_html = f'<span class="ps-badge ps-online">● PS ONLINE — Round {status.get("round",0)}/{status.get("max_rounds","?")} [{mode}{done}]</span>'
     return f"""<div class="glow-br"></div>
@@ -289,7 +195,6 @@ def nav_header(active="dashboard", status=None):
   <div>{status_html}</div>
 </header>"""
 
-# ── Dashboard HTML ───────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>EQ Distributed Training</title>
 {% if prediction is none %}<meta http-equiv="refresh" content="5">{% endif %}
@@ -309,26 +214,10 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
 {{ nav | safe }}
 <div class="container">
   <div class="metrics">
-    <div class="metric">
-      <div class="metric-label">training round</div>
-      <div class="metric-val" style="color:#00e5ff;">{{ status.get('round',0) }}</div>
-      <div class="metric-sub">current</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">gradient updates</div>
-      <div class="metric-val" style="color:#00ff9d;">{{ status.get('total_updates',0) }}</div>
-      <div class="metric-sub">total</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">worker nodes</div>
-      <div class="metric-val" style="color:#a78bfa;">{{ status.get('num_workers',2) }}</div>
-      <div class="metric-sub">active</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">PS uptime</div>
-      <div class="metric-val" style="color:#ffc107;">{{ status.get('uptime',0) }}s</div>
-      <div class="metric-sub">running</div>
-    </div>
+    <div class="metric"><div class="metric-label">training round</div><div class="metric-val" style="color:#00e5ff;">{{ status.get('round',0) }}</div><div class="metric-sub">current</div></div>
+    <div class="metric"><div class="metric-label">gradient updates</div><div class="metric-val" style="color:#00ff9d;">{{ status.get('total_updates',0) }}</div><div class="metric-sub">total</div></div>
+    <div class="metric"><div class="metric-label">worker nodes</div><div class="metric-val" style="color:#a78bfa;">{{ status.get('num_workers',2) }}</div><div class="metric-sub">active</div></div>
+    <div class="metric"><div class="metric-label">PS uptime</div><div class="metric-val" style="color:#ffc107;">{{ status.get('uptime',0) }}s</div><div class="metric-sub">running</div></div>
   </div>
 
   <div class="panel">
@@ -336,14 +225,17 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
     <a href="/start" class="btn btn-start">▶ Start Training</a>
     <a href="/stop" class="btn btn-stop">■ Stop</a>
     <a href="/" class="btn btn-reset">↺ Refresh</a>
+
+    <div class="mode-toggle">
+      <a href="/set_mode/sync" class="mode-btn {% if status.get('mode','sync') == 'sync' %}active-sync{% endif %}">SYNC</a>
+      <a href="/set_mode/async" class="mode-btn {% if status.get('mode','sync') == 'async' %}active-async{% endif %}">ASYNC</a>
+    </div>
+
     {% if status.get('stragglers') %}
     <span style="color:#ffc107;font-size:0.78rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">⚠ Straggler workers: {{ status['stragglers'] }}</span>
     {% endif %}
     {% if status.get('done') %}
     <span style="color:#00e5ff;font-size:0.78rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">✓ Training complete — {{ status.get('round',0) }} rounds</span>
-    {% endif %}
-    {% if status.get('mode') %}
-    <span style="color:rgba(148,163,184,0.4);font-size:0.7rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">MODE: {{ status.get('mode','sync').upper() }}</span>
     {% endif %}
   </div>
 
@@ -356,9 +248,7 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
         {% for item in history %}
         <div class="loss-row">
           <span class="loss-epoch">Round {{ item.round }}</span>
-          <div class="loss-bar-wrap">
-            <div class="loss-bar" style="width:{{ [[(item.loss/max_loss*100)|int, 2]|max, 100]|min }}%"></div>
-          </div>
+          <div class="loss-bar-wrap"><div class="loss-bar" style="width:{{ [[(item.loss/max_loss*100)|int, 2]|max, 100]|min }}%"></div></div>
           <span class="loss-val">{{ "%.4f"|format(item.loss) }}</span>
         </div>
         {% endfor %}
@@ -371,18 +261,9 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
       <div class="predict-box">
         <form method="POST" action="/predict">
           <div class="inp-row">
-            <div>
-              <div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">DEPTH (km)</div>
-              <input type="number" name="depth" value="{{ req_depth }}" step="0.1"/>
-            </div>
-            <div>
-              <div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">LATITUDE</div>
-              <input type="number" name="lat" value="{{ req_lat }}" step="0.01"/>
-            </div>
-            <div>
-              <div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">LONGITUDE</div>
-              <input type="number" name="lon" value="{{ req_lon }}" step="0.01"/>
-            </div>
+            <div><div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">DEPTH (km)</div><input type="number" name="depth" value="{{ req_depth }}" step="0.1"/></div>
+            <div><div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">LATITUDE</div><input type="number" name="lat" value="{{ req_lat }}" step="0.01"/></div>
+            <div><div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-bottom:4px;font-family:'JetBrains Mono',monospace;">LONGITUDE</div><input type="number" name="lon" value="{{ req_lon }}" step="0.01"/></div>
           </div>
           <button type="submit" class="btn btn-start" style="margin:0;">🔮 Predict</button>
         </form>
@@ -390,9 +271,7 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
         <div class="result-big">{{ "%.2f"|format(prediction) }} M</div>
         <p style="text-align:center;color:rgba(148,163,184,0.4);font-size:0.78rem;">Predicted Magnitude</p>
         {% endif %}
-        {% if pred_error %}
-        <div class="error-msg" style="margin-top:10px;">{{ pred_error }}</div>
-        {% endif %}
+        {% if pred_error %}<div class="error-msg" style="margin-top:10px;">{{ pred_error }}</div>{% endif %}
       </div>
     </div>
   </div>
@@ -404,15 +283,10 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
       <div class="worker-card">
         <div style="font-weight:600;margin-bottom:5px;color:#00ff9d;font-size:0.9rem;">⚙ Worker {{ i }}</div>
         <div style="font-size:0.75rem;color:rgba(148,163,184,0.4);margin-bottom:8px;font-family:'JetBrains Mono',monospace;">shard_{{ i }}.csv · VM {{ i+1 }}</div>
-        {% if i in status.get('stragglers',[]) %}
-          <span class="tag tag-straggler">STRAGGLER</span>
-        {% elif status.get('done') %}
-          <span class="tag tag-done">COMPLETE</span>
-        {% elif status.get('round',0) > 0 %}
-          <span class="tag tag-training">TRAINING</span>
-        {% else %}
-          <span class="tag tag-idle">IDLE</span>
-        {% endif %}
+        {% if i in status.get('stragglers',[]) %}<span class="tag tag-straggler">STRAGGLER</span>
+        {% elif status.get('done') %}<span class="tag tag-done">COMPLETE</span>
+        {% elif status.get('round',0) > 0 %}<span class="tag tag-training">TRAINING</span>
+        {% else %}<span class="tag tag-idle">IDLE</span>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -420,7 +294,6 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
 </div></body></html>
 """
 
-# ── Upload HTML ──────────────────────────────────────────────────
 UPLOAD_HTML = """<!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>Upload Dataset</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet"/>
@@ -439,25 +312,15 @@ UPLOAD_HTML = """<!DOCTYPE html><html><head>
   <div class="section-tag">Upload Dataset</div>
   <h2 style="font-size:1.5rem;margin-bottom:6px;font-weight:600;">Upload Earthquake Dataset</h2>
   <p style="color:rgba(148,163,184,0.5);font-size:0.82rem;margin-bottom:22px;">Upload CSV — system auto-splits into shards and distributes across worker nodes.</p>
-
   {% if azure_enabled %}
   <div class="storage-info">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span class="azure-badge">☁ Azure Blob Storage</span>
-      <span style="color:#00ff9d;font-size:0.78rem;">Connected</span>
-    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span class="azure-badge">☁ Azure Blob Storage</span><span style="color:#00ff9d;font-size:0.78rem;">Connected</span></div>
     <div style="color:rgba(148,163,184,0.4);font-size:0.78rem;">Shards uploaded to <span style="color:#60a5fa;">eqdistributed / eq-data</span></div>
   </div>
-  {% else %}
-  <div class="info-msg">Azure Blob Storage not configured. Shards saved locally only.</div>
-  {% endif %}
-
+  {% else %}<div class="info-msg">Azure Blob Storage not configured. Shards saved locally only.</div>{% endif %}
   {% if success_msg %}<div class="success-msg">✓ {{ success_msg }}</div>{% endif %}
   {% if error_msg %}<div class="error-msg">✕ {{ error_msg }}</div>{% endif %}
-  {% if blob_results %}
-  <div class="success-msg">☁ Azure Blob Results:<br>{% for r in blob_results %}&nbsp;&nbsp;{{ r }}<br>{% endfor %}</div>
-  {% endif %}
-
+  {% if blob_results %}<div class="success-msg">☁ Azure Blob Results:<br>{% for r in blob_results %}&nbsp;&nbsp;{{ r }}<br>{% endfor %}</div>{% endif %}
   <div class="panel">
     <div class="panel-head">Upload New Dataset</div>
     <form method="POST" action="/upload" enctype="multipart/form-data">
@@ -467,48 +330,28 @@ UPLOAD_HTML = """<!DOCTYPE html><html><head>
         <input type="file" name="dataset" accept=".csv" style="margin-top:14px;"/>
       </div>
       <div class="inp-row">
-        <div class="inp-group">
-          <span class="inp-label">Workers</span>
+        <div class="inp-group"><span class="inp-label">Workers</span>
           <select name="num_workers">
             <option value="2" selected>2 Workers</option>
             <option value="3">3 Workers</option>
             <option value="4">4 Workers</option>
           </select>
         </div>
-        <div class="inp-group">
-          <span class="inp-label">Max Rows</span>
-          <input type="number" name="max_rows" placeholder="All rows" min="1000"/>
-        </div>
+        <div class="inp-group"><span class="inp-label">Max Rows</span><input type="number" name="max_rows" placeholder="All rows" min="1000"/></div>
       </div>
       <button type="submit" class="btn btn-upload">Upload & Split</button>
-      {% if azure_enabled %}
-      <span style="color:rgba(96,165,250,0.6);font-size:0.7rem;font-family:'JetBrains Mono',monospace;margin-left:10px;">☁ Auto-uploads to Azure Blob</span>
-      {% endif %}
+      {% if azure_enabled %}<span style="color:rgba(96,165,250,0.6);font-size:0.7rem;font-family:'JetBrains Mono',monospace;margin-left:10px;">☁ Auto-uploads to Azure Blob</span>{% endif %}
     </form>
   </div>
-
   <div class="panel">
     <div class="panel-head">Required Columns</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;">
-        <div style="color:#00e5ff;font-weight:600;font-size:0.85rem;">Magnitude</div>
-        <div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">target</div>
-      </div>
-      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;">
-        <div style="color:#00ff9d;font-weight:600;font-size:0.85rem;">Depth</div>
-        <div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">km</div>
-      </div>
-      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;">
-        <div style="color:#a78bfa;font-weight:600;font-size:0.85rem;">Latitude</div>
-        <div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">coord</div>
-      </div>
-      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;">
-        <div style="color:#ffc107;font-weight:600;font-size:0.85rem;">Longitude</div>
-        <div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">coord</div>
-      </div>
+      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;"><div style="color:#00e5ff;font-weight:600;font-size:0.85rem;">Magnitude</div><div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">target</div></div>
+      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;"><div style="color:#00ff9d;font-weight:600;font-size:0.85rem;">Depth</div><div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">km</div></div>
+      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;"><div style="color:#a78bfa;font-weight:600;font-size:0.85rem;">Latitude</div><div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">coord</div></div>
+      <div style="background:rgba(6,8,16,0.7);border:0.5px solid rgba(0,229,255,0.1);border-radius:8px;padding:10px;text-align:center;"><div style="color:#ffc107;font-weight:600;font-size:0.85rem;">Longitude</div><div style="color:rgba(148,163,184,0.35);font-size:0.68rem;margin-top:3px;">coord</div></div>
     </div>
   </div>
-
   {% if shards %}
   <div class="panel">
     <div class="panel-head">Current Shards</div>
@@ -526,18 +369,12 @@ UPLOAD_HTML = """<!DOCTYPE html><html><head>
 </div></body></html>
 """
 
-# ── Analytics HTML ───────────────────────────────────────────────
 ANALYTICS_HTML = """<!DOCTYPE html><html><head>
 <meta charset="UTF-8"/><title>Training Analytics</title>
 <meta http-equiv="refresh" content="10">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet"/>
 <style>""" + BASE_CSS + """
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
-.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px;}
-.stat-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid rgba(0,229,255,0.06);font-family:'JetBrains Mono',monospace;font-size:0.75rem;}
-.stat-row:last-child{border-bottom:none;}
-.stat-label{color:rgba(148,163,184,0.45);}
-.stat-val{color:#cdd6f4;}
 .worker-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid rgba(0,229,255,0.06);}
 .worker-row:last-child{border-bottom:none;}
 .w-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
@@ -555,14 +392,19 @@ ANALYTICS_HTML = """<!DOCTYPE html><html><head>
 .lat-row:last-child{border-bottom:none;}
 .lat-bar-wrap{width:70px;height:3px;background:rgba(255,255,255,0.05);border-radius:2px;overflow:hidden;}
 .lat-bar{height:100%;border-radius:2px;}
+.mode-info{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 10px;border-radius:4px;margin-left:8px;}
+.mode-sync{background:rgba(0,229,255,0.08);color:#00e5ff;border:0.5px solid rgba(0,229,255,0.2);}
+.mode-async{background:rgba(167,139,250,0.08);color:#a78bfa;border:0.5px solid rgba(167,139,250,0.2);}
 </style></head><body>
 {{ nav | safe }}
 <div class="container">
-
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
     <div>
       <div class="section-tag">Analytics</div>
-      <h2 style="font-size:1.5rem;font-weight:600;margin-top:4px;">Training Analytics</h2>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
+        <h2 style="font-size:1.5rem;font-weight:600;">Training Analytics</h2>
+        <span class="mode-info mode-{{ current_mode }}">{{ current_mode.upper() }} MODE</span>
+      </div>
       <p style="color:rgba(148,163,184,0.4);font-size:0.78rem;margin-top:3px;font-family:'JetBrains Mono',monospace;">Auto-refreshes every 10 seconds</p>
     </div>
     <div style="display:flex;gap:8px;">
@@ -580,26 +422,10 @@ ANALYTICS_HTML = """<!DOCTYPE html><html><head>
   {% else %}
 
   <div class="metrics">
-    <div class="metric">
-      <div class="metric-label">workers trained</div>
-      <div class="metric-val" style="color:#00ff9d;">{{ num_workers }}</div>
-      <div class="metric-sub">this session</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">total epochs</div>
-      <div class="metric-val" style="color:#00e5ff;">{{ total_epochs }}</div>
-      <div class="metric-sub">combined</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">best RMSE</div>
-      <div class="metric-val" style="color:#a78bfa;">{{ "%.4f"|format(best_rmse) }}</div>
-      <div class="metric-sub">lowest achieved</div>
-    </div>
-    <div class="metric">
-      <div class="metric-label">final PS loss</div>
-      <div class="metric-val" style="color:#ffc107;">{{ "%.4f"|format(final_loss) }}</div>
-      <div class="metric-sub">last round</div>
-    </div>
+    <div class="metric"><div class="metric-label">workers trained</div><div class="metric-val" style="color:#00ff9d;">{{ num_workers }}</div><div class="metric-sub">this session</div></div>
+    <div class="metric"><div class="metric-label">total epochs</div><div class="metric-val" style="color:#00e5ff;">{{ total_epochs }}</div><div class="metric-sub">combined</div></div>
+    <div class="metric"><div class="metric-label">best RMSE</div><div class="metric-val" style="color:#a78bfa;">{{ "%.4f"|format(best_rmse) }}</div><div class="metric-sub">lowest achieved</div></div>
+    <div class="metric"><div class="metric-label">final PS loss</div><div class="metric-val" style="color:#ffc107;">{{ "%.4f"|format(final_loss) }}</div><div class="metric-sub">last round</div></div>
   </div>
 
   <div class="row2">
@@ -654,16 +480,16 @@ ANALYTICS_HTML = """<!DOCTYPE html><html><head>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 const COLORS = ["#00e5ff","#00ff9d","#f97316","#a78bfa"];
-const DASHES = [[]],[5,3],[4,4],[8,3]];
+const DASHES = [[],[5,3],[4,4],[8,3]];
 const gridColor = 'rgba(0,229,255,0.06)';
 const tickColor = 'rgba(148,163,184,0.45)';
 
-const workerData = {{ worker_chart_data | tojson }};
-const psRounds   = {{ ps_rounds | tojson }};
-const psLosses   = {{ ps_losses | tojson }};
+const workerData = {{ worker_chart_data_json | safe }};
+const psRounds   = {{ ps_rounds_json | safe }};
+const psLosses   = {{ ps_losses_json | safe }};
 const maxEpochs  = {{ max_epochs }};
 
-const wids = Object.keys(workerData).map(Number);
+const wids   = Object.keys(workerData).map(Number);
 const labels = Array.from({length: maxEpochs}, (_,i) => i+1);
 
 function buildLegend(elId) {
@@ -677,25 +503,17 @@ new Chart(document.getElementById('rmseChart'), {
   type: 'line',
   data: {
     labels,
-    datasets: wids.filter(wid=>workerData[wid].rmses&&workerData[wid].rmses.length).map(wid => ({
-      label: `Worker ${wid}`,
-      data: workerData[wid].rmses,
-      borderColor: COLORS[wid%4],
-      backgroundColor: 'transparent',
-      borderWidth: 1.8,
-      pointRadius: 2.5,
-      tension: 0.3,
-      borderDash: DASHES[wid%4],
+    datasets: wids.filter(wid=>workerData[wid].rmses&&workerData[wid].rmses.length).map(wid=>({
+      label:`Worker ${wid}`,
+      data:workerData[wid].rmses,
+      borderColor:COLORS[wid%4],
+      backgroundColor:'transparent',
+      borderWidth:1.8,pointRadius:2.5,tension:0.3,
+      borderDash:DASHES[wid%4],
     }))
   },
-  options: {
-    responsive:true, maintainAspectRatio:false,
-    plugins:{legend:{display:false}},
-    scales:{
-      x:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}},
-      y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}
-    }
-  }
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}},y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}}}
 });
 buildLegend('rmseLegend');
 
@@ -703,85 +521,54 @@ new Chart(document.getElementById('lossChart'), {
   type: 'line',
   data: {
     labels,
-    datasets: wids.filter(wid=>workerData[wid].losses&&workerData[wid].losses.length).map(wid => ({
-      label: `Worker ${wid}`,
-      data: workerData[wid].losses,
-      borderColor: COLORS[wid%4],
-      backgroundColor: 'transparent',
-      borderWidth: 1.8,
-      pointRadius: 2.5,
-      tension: 0.3,
-      borderDash: DASHES[wid%4],
+    datasets: wids.filter(wid=>workerData[wid].losses&&workerData[wid].losses.length).map(wid=>({
+      label:`Worker ${wid}`,
+      data:workerData[wid].losses,
+      borderColor:COLORS[wid%4],
+      backgroundColor:'transparent',
+      borderWidth:1.8,pointRadius:2.5,tension:0.3,
+      borderDash:DASHES[wid%4],
     }))
   },
-  options: {
-    responsive:true, maintainAspectRatio:false,
-    plugins:{legend:{display:false}},
-    scales:{
-      x:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}},
-      y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}
-    }
-  }
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}},y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}}}
 });
 buildLegend('lossLegend');
 
-const improvements = wids.filter(wid=>workerData[wid].rmses&&workerData[wid].rmses.length).map(wid=>{
-  const r = workerData[wid].rmses;
-  return parseFloat(((1 - r[r.length-1]/r[0])*100).toFixed(1));
-});
 const pieWids = wids.filter(wid=>workerData[wid].rmses&&workerData[wid].rmses.length);
-new Chart(document.getElementById('pieChart'), {
-  type:'doughnut',
-  data:{
-    labels: pieWids.map(wid=>`Worker ${wid}`),
-    datasets:[{
-      data: improvements,
-      backgroundColor: pieWids.map(wid=>COLORS[wid%4]),
-      borderWidth: 0, hoverOffset: 5
-    }]
-  },
-  options:{
-    responsive:true, maintainAspectRatio:false, cutout:'62%',
-    plugins:{
-      legend:{display:false},
-      tooltip:{callbacks:{label:(c)=>`${c.label}: ${c.parsed.toFixed(1)}% improvement`}}
-    }
-  }
+const improvements = pieWids.map(wid=>{
+  const r=workerData[wid].rmses;
+  return parseFloat(((1-r[r.length-1]/r[0])*100).toFixed(1));
 });
-document.getElementById('pieLegend').innerHTML = pieWids.map((wid,i)=>
+new Chart(document.getElementById('pieChart'),{
+  type:'doughnut',
+  data:{labels:pieWids.map(wid=>`Worker ${wid}`),datasets:[{data:improvements,backgroundColor:pieWids.map(wid=>COLORS[wid%4]),borderWidth:0,hoverOffset:5}]},
+  options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{display:false},tooltip:{callbacks:{label:(c)=>`${c.label}: ${c.parsed.toFixed(1)}% improvement`}}}}
+});
+document.getElementById('pieLegend').innerHTML=pieWids.map((wid,i)=>
   `<span class="leg-item"><span class="leg-dot" style="background:${COLORS[wid%4]};"></span>Worker ${wid} ${improvements[i]}%</span>`
 ).join('');
 
-const latWids = wids.filter(wid=>workerData[wid].comms&&workerData[wid].comms.length);
-const latVals = latWids.map(wid=>{const c=workerData[wid].comms.filter(x=>x>0);return c.length?(c.reduce((a,b)=>a+b,0)/c.length).toFixed(1):0;});
-const maxLat  = Math.max(...latVals.map(Number), 0.1);
-document.getElementById('latRows').innerHTML = latWids.map((wid,i)=>`
+const latWids=wids.filter(wid=>workerData[wid].comms&&workerData[wid].comms.length);
+const latVals=latWids.map(wid=>{const c=workerData[wid].comms.filter(x=>x>0);return c.length?(c.reduce((a,b)=>a+b,0)/c.length).toFixed(1):0;});
+const maxLat=Math.max(...latVals.map(Number),0.1);
+document.getElementById('latRows').innerHTML=latWids.map((wid,i)=>`
   <div class="lat-row">
     <span style="color:${COLORS[wid%4]};font-family:'JetBrains Mono',monospace;font-weight:600;min-width:62px;">Worker ${wid}</span>
     <div class="lat-bar-wrap"><div class="lat-bar" style="width:${(latVals[i]/maxLat*100).toFixed(0)}%;background:${COLORS[wid%4]};"></div></div>
     <span style="color:rgba(148,163,184,0.5);min-width:36px;">${latVals[i]}ms</span>
   </div>`).join('');
 
-new Chart(document.getElementById('latChart'), {
+new Chart(document.getElementById('latChart'),{
   type:'bar',
-  data:{
-    labels: latWids.map(wid=>`W${wid}`),
-    datasets:[{data:latVals.map(Number), backgroundColor:latWids.map(wid=>COLORS[wid%4]), borderRadius:3, borderWidth:0}]
-  },
-  options:{
-    responsive:true, maintainAspectRatio:false,
-    plugins:{legend:{display:false}},
-    scales:{
-      x:{ticks:{font:{size:9},color:tickColor},grid:{display:false}},
-      y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor},title:{display:true,text:'ms',font:{size:9},color:tickColor}}
-    }
-  }
+  data:{labels:latWids.map(wid=>`W${wid}`),datasets:[{data:latVals.map(Number),backgroundColor:latWids.map(wid=>COLORS[wid%4]),borderRadius:3,borderWidth:0}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{ticks:{font:{size:9},color:tickColor},grid:{display:false}},y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor},title:{display:true,text:'ms',font:{size:9},color:tickColor}}}}
 });
 
-const maxEp = Math.max(...wids.map(wid=>workerData[wid].rmses?workerData[wid].rmses.length:0));
-document.getElementById('workerRows').innerHTML = wids.map(wid=>{
-  const w = workerData[wid];
-  const ep = w.rmses ? w.rmses.length : 0;
+const maxEp=Math.max(...wids.map(wid=>workerData[wid].rmses?workerData[wid].rmses.length:0));
+document.getElementById('workerRows').innerHTML=wids.map(wid=>{
+  const w=workerData[wid];const ep=w.rmses?w.rmses.length:0;
   return `<div class="worker-row">
     <div class="w-dot" style="background:${COLORS[wid%4]};"></div>
     <div class="w-name">Worker ${wid}</div>
@@ -791,16 +578,16 @@ document.getElementById('workerRows').innerHTML = wids.map(wid=>{
   </div>`;
 }).join('');
 
-const tabsEl = document.getElementById('workerTabs');
-const statEl = document.getElementById('workerStatContent');
-let activeW = wids[0];
+const tabsEl=document.getElementById('workerTabs');
+const statEl=document.getElementById('workerStatContent');
+let activeW=wids[0];
 
-function renderStat(wid) {
-  const w = workerData[wid];
-  const r = w.rmses||[], l = w.losses||[], c = (w.comms||[]).filter(x=>x>0);
-  const imp = r.length>=2 ? ((1-r[r.length-1]/r[0])*100).toFixed(1) : 'N/A';
-  const avgLat = c.length ? (c.reduce((a,b)=>a+b,0)/c.length).toFixed(1) : 'N/A';
-  statEl.innerHTML = `
+function renderStat(wid){
+  const w=workerData[wid];
+  const r=w.rmses||[],l=w.losses||[],c=(w.comms||[]).filter(x=>x>0);
+  const imp=r.length>=2?((1-r[r.length-1]/r[0])*100).toFixed(1):'N/A';
+  const avgLat=c.length?(c.reduce((a,b)=>a+b,0)/c.length).toFixed(1):'N/A';
+  statEl.innerHTML=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;">
       <div class="stat-mini"><div class="stat-mini-label">Epochs</div><div class="stat-mini-val">${r.length}</div></div>
       <div class="stat-mini"><div class="stat-mini-label">Improvement</div><div class="stat-mini-val" style="color:#00ff9d;">${imp}%</div></div>
@@ -812,13 +599,12 @@ function renderStat(wid) {
     </div>`;
 }
 
-tabsEl.innerHTML = wids.map(wid=>
+tabsEl.innerHTML=wids.map(wid=>
   `<button class="tab-btn${wid===activeW?' active':''}" data-wid="${wid}" style="border-left:2px solid ${COLORS[wid%4]};">W${wid}</button>`
 ).join('');
-tabsEl.addEventListener('click', e => {
-  const btn = e.target.closest('.tab-btn');
-  if(!btn) return;
-  activeW = parseInt(btn.dataset.wid);
+tabsEl.addEventListener('click',e=>{
+  const btn=e.target.closest('.tab-btn');if(!btn)return;
+  activeW=parseInt(btn.dataset.wid);
   tabsEl.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',parseInt(b.dataset.wid)===activeW));
   renderStat(activeW);
 });
@@ -827,22 +613,9 @@ renderStat(activeW);
 if(psRounds.length>1){
   new Chart(document.getElementById('psChart'),{
     type:'line',
-    data:{
-      labels:psRounds,
-      datasets:[{
-        label:'PS loss',data:psLosses,
-        borderColor:'#ffc107',backgroundColor:'rgba(255,193,7,0.05)',
-        fill:true,borderWidth:1.5,pointRadius:1.5,tension:0.4
-      }]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false}},
-      scales:{
-        x:{ticks:{font:{size:9},color:tickColor,maxTicksLimit:7},grid:{color:gridColor},title:{display:true,text:'round',font:{size:9},color:tickColor}},
-        y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}
-      }
-    }
+    data:{labels:psRounds,datasets:[{label:'PS loss',data:psLosses,borderColor:'#ffc107',backgroundColor:'rgba(255,193,7,0.05)',fill:true,borderWidth:1.5,pointRadius:1.5,tension:0.4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:9},color:tickColor,maxTicksLimit:7},grid:{color:gridColor},title:{display:true,text:'round',font:{size:9},color:tickColor}},y:{ticks:{font:{size:9},color:tickColor},grid:{color:gridColor}}}}
   });
 }
 </script>
@@ -908,6 +681,20 @@ def stop_training():
         prediction=None, pred_error=None,
         req_depth=10, req_lat=35.0, req_lon=140.0)
 
+@app.route("/set_mode/<mode>")
+def set_mode(mode):
+    if mode not in ("sync", "async"):
+        return redirect("/")
+    ps_request({"type": "set_mode", "mode": mode})
+    status = ps_request({"type": "get_status"})
+    if "data" in status: status = status["data"]
+    elif "error" in status: status = {}
+    status = fix_worker_count(status)
+    return render_template_string(DASHBOARD_HTML,
+        nav=nav_header("dashboard", status), status=status,
+        prediction=None, pred_error=None,
+        req_depth=10, req_lat=35.0, req_lon=140.0)
+
 @app.route("/status")
 def api_status():
     return jsonify(ps_request({"type": "get_status"}))
@@ -917,14 +704,21 @@ def analytics_page():
     workers = load_all_worker_histories()
     ps_rounds, ps_losses = load_ps_loss_history()
 
+    # Get current mode from PS
+    ps_status = ps_request({"type": "get_status"})
+    current_mode = "sync"
+    if "data" in ps_status:
+        current_mode = ps_status["data"].get("mode", "sync")
+
     if not workers and not ps_rounds:
         return render_template_string(ANALYTICS_HTML,
             nav=nav_header("analytics"), has_data=False,
+            current_mode=current_mode,
             num_workers=0, total_epochs=0, best_rmse=0,
-            final_loss=0, worker_chart_data={},
-            ps_rounds=[], ps_losses=[],
-            max_epochs=1, rmse_max=1, rmse_min=0,
-            loss_max=1, loss_min=0, comm_max=100, comm_min=0)
+            final_loss=0,
+            worker_chart_data_json="{}",
+            ps_rounds_json="[]", ps_losses_json="[]",
+            max_epochs=1)
 
     COLORS = ["#00e5ff", "#00ff9d", "#f97316", "#a78bfa"]
     DASHES = ["", "8 4", "4 4", "12 3"]
@@ -944,13 +738,6 @@ def analytics_page():
         all_loss += losses
         all_comm += comms
 
-    rmse_max = max(all_rmse) * 1.05 if all_rmse else 1
-    rmse_min = min(all_rmse) * 0.95 if all_rmse else 0
-    loss_max = max(all_loss) * 1.05 if all_loss else 1
-    loss_min = min(all_loss) * 0.95 if all_loss else 0
-    comm_max = max(all_comm) * 1.1  if all_comm else 100
-    comm_min = min(all_comm) * 0.9  if all_comm else 0
-
     max_epochs   = max((len(w["rmses"]) for w in worker_chart_data.values()), default=1)
     num_workers  = len(workers)
     total_epochs = sum(len(w.get("rmses", [])) for w in workers.values())
@@ -959,14 +746,13 @@ def analytics_page():
 
     return render_template_string(ANALYTICS_HTML,
         nav=nav_header("analytics"), has_data=True,
+        current_mode=current_mode,
         num_workers=num_workers, total_epochs=total_epochs,
         best_rmse=best_rmse, final_loss=final_loss,
-        worker_chart_data=worker_chart_data,
-        ps_rounds=ps_rounds, ps_losses=ps_losses,
-        max_epochs=max_epochs,
-        rmse_max=rmse_max, rmse_min=rmse_min,
-        loss_max=loss_max, loss_min=loss_min,
-        comm_max=comm_max, comm_min=comm_min)
+        worker_chart_data_json=json.dumps(worker_chart_data),
+        ps_rounds_json=json.dumps(ps_rounds),
+        ps_losses_json=json.dumps(ps_losses),
+        max_epochs=max_epochs)
 
 @app.route("/api/analytics")
 def api_analytics():

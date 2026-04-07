@@ -8,14 +8,14 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [PS] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("PS")
 
-PS_HOST           = "0.0.0.0"
-PS_PORT           = int(os.environ.get("PS_PORT", 50051))
-NUM_WORKERS       = int(os.environ.get("NUM_WORKERS", 2))
-NUM_FEATURES      = 3
-LEARNING_RATE     = float(os.environ.get("LR", 0.001))
-STRAGGLER_TIMEOUT = int(os.environ.get("STRAGGLER_TIMEOUT", 30))
-CHECKPOINT_DIR    = Path(os.environ.get("CHECKPOINT_DIR", "checkpoints"))
-MAX_ROUNDS        = int(os.environ.get("MAX_ROUNDS", 1000))
+PS_HOST             = "0.0.0.0"
+PS_PORT             = int(os.environ.get("PS_PORT", 50051))
+NUM_WORKERS         = int(os.environ.get("NUM_WORKERS", 4))
+NUM_FEATURES        = 3
+LEARNING_RATE       = float(os.environ.get("LR", 0.001))
+STRAGGLER_TIMEOUT   = int(os.environ.get("STRAGGLER_TIMEOUT", 30))
+CHECKPOINT_DIR      = Path(os.environ.get("CHECKPOINT_DIR", "checkpoints"))
+MAX_ROUNDS          = int(os.environ.get("MAX_ROUNDS", 1000))
 MEMORY_LOG_INTERVAL = 60
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
@@ -35,20 +35,30 @@ class ParameterServer:
         self.done          = False
         threading.Thread(target=self._memory_watchdog, daemon=True).start()
 
+    def _reset_state(self):
+        self.grad_buffer.clear()
+        self.stragglers.clear()
+        self.last_seen.clear()
+        self.round         = 0
+        self.total_updates = 0
+        self.loss_history  = []
+        self.weights       = np.zeros(NUM_FEATURES + 1, dtype=np.float32)
+        self.done          = False
+        self.start_time    = time.time()
+
     def set_num_workers(self, n):
         with self.lock:
             old = self.num_workers
             self.num_workers = n
-            self.grad_buffer.clear()
-            self.stragglers.clear()
-            self.last_seen.clear()
-            self.round         = 0
-            self.total_updates = 0
-            self.loss_history  = []
-            self.weights       = np.zeros(NUM_FEATURES + 1, dtype=np.float32)
-            self.done          = False
-            self.start_time    = time.time()
+            self._reset_state()
             log.info(f"Worker count changed {old} → {n}. PS state reset.")
+
+    def set_mode(self, mode):
+        with self.lock:
+            old = self.mode
+            self.mode = mode
+            self._reset_state()
+            log.info(f"Mode changed {old} → {mode}. PS state reset.")
 
     def push_gradients(self, worker_id, gradients, loss):
         with self.lock:
@@ -120,7 +130,8 @@ class ParameterServer:
         with self.lock:
             return {"round": self.round, "max_rounds": MAX_ROUNDS,
                     "total_updates": self.total_updates,
-                    "num_workers": self.num_workers, "stragglers": list(self.stragglers),
+                    "num_workers": self.num_workers,
+                    "stragglers": list(self.stragglers),
                     "loss_history": self.loss_history[-20:],
                     "uptime": round(time.time() - self.start_time, 1),
                     "mode": self.mode, "done": self.done}
@@ -147,6 +158,11 @@ def handle_client(conn, addr, ps):
                     n = int(msg.get("num_workers", 2))
                     ps.set_num_workers(n)
                     conn.sendall(json.dumps({"type": "ok", "num_workers": n}).encode())
+                elif msg_type == "set_mode":
+                    mode = msg.get("mode", "sync")
+                    if mode in ("sync", "async"):
+                        ps.set_mode(mode)
+                    conn.sendall(json.dumps({"type": "ok", "mode": ps.mode}).encode())
                 data = b""
             except json.JSONDecodeError: continue
     except Exception as e: log.error(f"{addr}: {e}")
