@@ -135,7 +135,7 @@ def handle_client(conn, addr, ps):
     except Exception as e: log.error(f"{addr}: {e}")
     finally: conn.close()
 
-def run_server(num_workers=NUM_WORKERS, mode="sync"):
+def run_server(num_workers=NUM_WORKERS, mode=os.environ.get("MODE", "sync")):
     ps = ParameterServer(num_workers, mode)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
