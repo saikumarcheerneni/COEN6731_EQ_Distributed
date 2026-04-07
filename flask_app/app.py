@@ -21,6 +21,13 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DATA_SHARDS_DIR = Path("data_shards")
 OUTPUTS_DIR     = Path("outputs")
 
+WORKER_COLORS = {
+    0: {"line": "#00e5ff", "dash": ""},
+    1: {"line": "#00ff9d", "dash": "8 4"},
+    2: {"line": "#f97316", "dash": "4 4"},
+    3: {"line": "#a78bfa", "dash": "12 3"},
+}
+
 def ps_request(msg):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -62,7 +69,6 @@ def load_csv_history(path):
     return epochs, rmses, losses, comms
 
 def load_all_worker_histories():
-    """Load history — download from Azure Blob first, then read local files."""
     if AZURE_CONN_STR:
         try:
             from azure.storage.blob import BlobServiceClient
@@ -71,8 +77,7 @@ def load_all_worker_histories():
             for wid in range(4):
                 blob_name = f"worker_{wid}_history.csv"
                 try:
-                    blob = client.get_blob_client(
-                        container=CONTAINER_NAME, blob=blob_name)
+                    blob = client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
                     local_path = OUTPUTS_DIR / blob_name
                     with open(local_path, "wb") as f:
                         f.write(blob.download_blob().readall())
@@ -91,7 +96,6 @@ def load_all_worker_histories():
     return workers
 
 def load_ps_loss_history():
-    """Load PS loss history from get_status."""
     status = ps_request({"type": "get_status"})
     if "data" in status:
         history = status["data"].get("loss_history", [])
@@ -189,7 +193,7 @@ DASHBOARD_HTML = """
 .inp-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
 .result-big{font-family:'JetBrains Mono',monospace;font-size:2.5rem;font-weight:700;
   color:#00ff9d;text-align:center;padding:16px;}
-.workers-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+.workers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;}
 .worker-card{background:#0c1120;border:1px solid #1a2a45;border-radius:10px;padding:16px;}
 .tag{display:inline-block;padding:2px 10px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:0.62rem;font-weight:700;}
 .tag-training{background:rgba(0,255,157,0.1);color:#00ff9d;}
@@ -272,7 +276,7 @@ DASHBOARD_HTML = """
   <div class="panel" style="margin-top:0;">
     <div class="panel-title">// WORKER NODES</div>
     <div class="workers-grid">
-      {% for i in range(status.get('num_workers',2)) %}
+      {% for i in range(status.get('num_workers', 2)) %}
       <div class="worker-card">
         <div style="font-weight:700;margin-bottom:6px;color:#00ff9d;">⚙️ Worker {{ i }}</div>
         <div style="font-size:0.8rem;color:#45556e;margin-bottom:8px;">shard_{{ i }}.csv · VM {{ i+1 }}</div>
@@ -417,7 +421,7 @@ ANALYTICS_HTML = """
     <div class="card"><div class="card-val yellow">{{ "%.4f"|format(final_loss) }}</div><div class="card-lbl">Final PS Loss</div></div>
   </div>
 
-  <!-- Chart 1: RMSE per worker -->
+  <!-- Chart 1: RMSE per worker — dynamic for 2/3/4 workers -->
   <div class="panel">
     <div class="panel-title">// RMSE CONVERGENCE — PER WORKER</div>
     <div class="chart-area">
@@ -432,29 +436,31 @@ ANALYTICS_HTML = """
         <text x="{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}" y="255"
           fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
         {% endfor %}
-        <text x="420" y="275" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">Epoch</text>
-        {% if w0_rmse %}
-        <polyline fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          points="{% for i in range(w0_rmse|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(rmse_max-w0_rmse[i])/(rmse_max-rmse_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w0_rmse|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(rmse_max-w0_rmse[-1])/(rmse_max-rmse_min+0.0001)*220 }}" r="4" fill="#00e5ff"/>
-        {% endif %}
-        {% if w1_rmse %}
-        <polyline fill="none" stroke="#00ff9d" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          stroke-dasharray="8 4"
-          points="{% for i in range(w1_rmse|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(rmse_max-w1_rmse[i])/(rmse_max-rmse_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w1_rmse|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(rmse_max-w1_rmse[-1])/(rmse_max-rmse_min+0.0001)*220 }}" r="4" fill="#00ff9d"/>
-        {% endif %}
+        {% for wid, wdata in worker_chart_data.items() %}
+          {% if wdata.rmses %}
+          <polyline fill="none" stroke="{{ wdata.color }}" stroke-width="2.5"
+            stroke-dasharray="{{ wdata.dash }}"
+            stroke-linecap="round" stroke-linejoin="round"
+            points="{% for i in range(wdata.rmses|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(rmse_max-wdata.rmses[i])/(rmse_max-rmse_min+0.0001)*220 }} {% endfor %}"/>
+          <circle cx="{{ 60+(wdata.rmses|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
+            cy="{{ 20+(rmse_max-wdata.rmses[-1])/(rmse_max-rmse_min+0.0001)*220 }}" r="4" fill="{{ wdata.color }}"/>
+          {% endif %}
+        {% endfor %}
       </svg>
     </div>
     <div class="chart-legend">
-      {% if w0_rmse %}<div class="legend-item"><div class="legend-dot" style="background:#00e5ff;"></div>Worker 0 — Final RMSE: {{ "%.4f"|format(w0_rmse[-1]) }}</div>{% endif %}
-      {% if w1_rmse %}<div class="legend-item"><div class="legend-dot" style="background:#00ff9d;"></div>Worker 1 — Final RMSE: {{ "%.4f"|format(w1_rmse[-1]) }}</div>{% endif %}
+      {% for wid, wdata in worker_chart_data.items() %}
+        {% if wdata.rmses %}
+        <div class="legend-item">
+          <div class="legend-dot" style="background:{{ wdata.color }};"></div>
+          Worker {{ wid }} — Final RMSE: {{ "%.4f"|format(wdata.rmses[-1]) }}
+        </div>
+        {% endif %}
+      {% endfor %}
     </div>
   </div>
 
-  <!-- Chart 2: Loss per worker -->
+  <!-- Chart 2: Loss per worker — dynamic -->
   <div class="panel">
     <div class="panel-title">// TRAINING LOSS — PER WORKER</div>
     <div class="chart-area">
@@ -469,25 +475,27 @@ ANALYTICS_HTML = """
         <text x="{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}" y="255"
           fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
         {% endfor %}
-        <text x="420" y="275" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">Epoch</text>
-        {% if w0_loss %}
-        <polyline fill="none" stroke="#f97316" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          points="{% for i in range(w0_loss|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(loss_max-w0_loss[i])/(loss_max-loss_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w0_loss|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(loss_max-w0_loss[-1])/(loss_max-loss_min+0.0001)*220 }}" r="4" fill="#f97316"/>
-        {% endif %}
-        {% if w1_loss %}
-        <polyline fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          stroke-dasharray="8 4"
-          points="{% for i in range(w1_loss|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(loss_max-w1_loss[i])/(loss_max-loss_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w1_loss|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(loss_max-w1_loss[-1])/(loss_max-loss_min+0.0001)*220 }}" r="4" fill="#a78bfa"/>
-        {% endif %}
+        {% for wid, wdata in worker_chart_data.items() %}
+          {% if wdata.losses %}
+          <polyline fill="none" stroke="{{ wdata.color }}" stroke-width="2.5"
+            stroke-dasharray="{{ wdata.dash }}"
+            stroke-linecap="round" stroke-linejoin="round"
+            points="{% for i in range(wdata.losses|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(loss_max-wdata.losses[i])/(loss_max-loss_min+0.0001)*220 }} {% endfor %}"/>
+          <circle cx="{{ 60+(wdata.losses|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
+            cy="{{ 20+(loss_max-wdata.losses[-1])/(loss_max-loss_min+0.0001)*220 }}" r="4" fill="{{ wdata.color }}"/>
+          {% endif %}
+        {% endfor %}
       </svg>
     </div>
     <div class="chart-legend">
-      {% if w0_loss %}<div class="legend-item"><div class="legend-dot" style="background:#f97316;"></div>Worker 0 Loss — Final: {{ "%.4f"|format(w0_loss[-1]) }}</div>{% endif %}
-      {% if w1_loss %}<div class="legend-item"><div class="legend-dot" style="background:#a78bfa;"></div>Worker 1 Loss — Final: {{ "%.4f"|format(w1_loss[-1]) }}</div>{% endif %}
+      {% for wid, wdata in worker_chart_data.items() %}
+        {% if wdata.losses %}
+        <div class="legend-item">
+          <div class="legend-dot" style="background:{{ wdata.color }};"></div>
+          Worker {{ wid }} Loss — Final: {{ "%.4f"|format(wdata.losses[-1]) }}
+        </div>
+        {% endif %}
+      {% endfor %}
     </div>
   </div>
 
@@ -520,8 +528,9 @@ ANALYTICS_HTML = """
   </div>
   {% endif %}
 
-  <!-- Chart 4: Communication Latency -->
-  {% if w0_comm or w1_comm %}
+  <!-- Chart 4: Communication Latency — dynamic -->
+  {% set has_comm = worker_chart_data.values() | selectattr('comms') | list | length > 0 %}
+  {% if has_comm %}
   <div class="panel">
     <div class="panel-title">// PS COMMUNICATION LATENCY — PER EPOCH (ms)</div>
     <div class="chart-area">
@@ -536,55 +545,49 @@ ANALYTICS_HTML = """
         <text x="{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}" y="255"
           fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
         {% endfor %}
-        <text x="420" y="275" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">Epoch</text>
-        {% if w0_comm %}
-        <polyline fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          points="{% for i in range(w0_comm|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(comm_max-w0_comm[i])/(comm_max-comm_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w0_comm|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(comm_max-w0_comm[-1])/(comm_max-comm_min+0.0001)*220 }}" r="4" fill="#00e5ff"/>
-        {% endif %}
-        {% if w1_comm %}
-        <polyline fill="none" stroke="#f97316" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-          stroke-dasharray="8 4"
-          points="{% for i in range(w1_comm|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(comm_max-w1_comm[i])/(comm_max-comm_min+0.0001)*220 }} {% endfor %}"/>
-        <circle cx="{{ 60+(w1_comm|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
-          cy="{{ 20+(comm_max-w1_comm[-1])/(comm_max-comm_min+0.0001)*220 }}" r="4" fill="#f97316"/>
-        {% endif %}
+        {% for wid, wdata in worker_chart_data.items() %}
+          {% if wdata.comms %}
+          <polyline fill="none" stroke="{{ wdata.color }}" stroke-width="2.5"
+            stroke-dasharray="{{ wdata.dash }}"
+            stroke-linecap="round" stroke-linejoin="round"
+            points="{% for i in range(wdata.comms|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(comm_max-wdata.comms[i])/(comm_max-comm_min+0.0001)*220 }} {% endfor %}"/>
+          <circle cx="{{ 60+(wdata.comms|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
+            cy="{{ 20+(comm_max-wdata.comms[-1])/(comm_max-comm_min+0.0001)*220 }}" r="4" fill="{{ wdata.color }}"/>
+          {% endif %}
+        {% endfor %}
       </svg>
     </div>
     <div class="chart-legend">
-      {% if w0_comm %}<div class="legend-item"><div class="legend-dot" style="background:#00e5ff;"></div>Worker 0 — Avg latency: {{ "%.1f"|format(w0_comm|sum / w0_comm|length) }}ms</div>{% endif %}
-      {% if w1_comm %}<div class="legend-item"><div class="legend-dot" style="background:#f97316;"></div>Worker 1 — Avg latency: {{ "%.1f"|format(w1_comm|sum / w1_comm|length) }}ms</div>{% endif %}
+      {% for wid, wdata in worker_chart_data.items() %}
+        {% if wdata.comms %}
+        <div class="legend-item">
+          <div class="legend-dot" style="background:{{ wdata.color }};"></div>
+          Worker {{ wid }} — Avg latency: {{ "%.1f"|format(wdata.comms|sum / wdata.comms|length) }}ms
+        </div>
+        {% endif %}
+      {% endfor %}
     </div>
   </div>
   {% endif %}
 
-  <!-- Worker stats table -->
-  <div class="two-col">
-    {% if w0_rmse %}
-    <div class="panel">
-      <div class="panel-title">// WORKER 0 STATS</div>
-      <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-val">{{ w0_rmse|length }}</span></div>
-      <div class="stat-row"><span class="stat-label">Initial RMSE</span><span class="stat-val">{{ "%.4f"|format(w0_rmse[0]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">Final RMSE</span><span class="stat-val cyan">{{ "%.4f"|format(w0_rmse[-1]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">RMSE improvement</span><span class="stat-val green">{{ "%.1f"|format((1-w0_rmse[-1]/w0_rmse[0])*100) }}%</span></div>
-      <div class="stat-row"><span class="stat-label">Initial loss</span><span class="stat-val">{{ "%.4f"|format(w0_loss[0]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">Final loss</span><span class="stat-val orange">{{ "%.4f"|format(w0_loss[-1]) }}</span></div>
-      {% if w0_comm %}<div class="stat-row"><span class="stat-label">Avg PS latency</span><span class="stat-val cyan">{{ "%.1f"|format(w0_comm|sum / w0_comm|length) }}ms</span></div>{% endif %}
-    </div>
-    {% endif %}
-    {% if w1_rmse %}
-    <div class="panel">
-      <div class="panel-title">// WORKER 1 STATS</div>
-      <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-val">{{ w1_rmse|length }}</span></div>
-      <div class="stat-row"><span class="stat-label">Initial RMSE</span><span class="stat-val">{{ "%.4f"|format(w1_rmse[0]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">Final RMSE</span><span class="stat-val cyan">{{ "%.4f"|format(w1_rmse[-1]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">RMSE improvement</span><span class="stat-val green">{{ "%.1f"|format((1-w1_rmse[-1]/w1_rmse[0])*100) }}%</span></div>
-      <div class="stat-row"><span class="stat-label">Initial loss</span><span class="stat-val">{{ "%.4f"|format(w1_loss[0]) }}</span></div>
-      <div class="stat-row"><span class="stat-label">Final loss</span><span class="stat-val purple">{{ "%.4f"|format(w1_loss[-1]) }}</span></div>
-      {% if w1_comm %}<div class="stat-row"><span class="stat-label">Avg PS latency</span><span class="stat-val cyan">{{ "%.1f"|format(w1_comm|sum / w1_comm|length) }}ms</span></div>{% endif %}
-    </div>
-    {% endif %}
+  <!-- Worker stats cards — dynamic for all workers -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;margin-bottom:20px;">
+    {% for wid, wdata in worker_chart_data.items() %}
+      {% if wdata.rmses %}
+      <div class="panel">
+        <div class="panel-title" style="color:{{ wdata.color }};">// WORKER {{ wid }} STATS</div>
+        <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-val">{{ wdata.rmses|length }}</span></div>
+        <div class="stat-row"><span class="stat-label">Initial RMSE</span><span class="stat-val">{{ "%.4f"|format(wdata.rmses[0]) }}</span></div>
+        <div class="stat-row"><span class="stat-label">Final RMSE</span><span class="stat-val" style="color:{{ wdata.color }};">{{ "%.4f"|format(wdata.rmses[-1]) }}</span></div>
+        <div class="stat-row"><span class="stat-label">RMSE improvement</span><span class="stat-val green">{{ "%.1f"|format((1-wdata.rmses[-1]/wdata.rmses[0])*100) }}%</span></div>
+        <div class="stat-row"><span class="stat-label">Initial loss</span><span class="stat-val">{{ "%.4f"|format(wdata.losses[0]) }}</span></div>
+        <div class="stat-row"><span class="stat-label">Final loss</span><span class="stat-val" style="color:{{ wdata.color }};">{{ "%.4f"|format(wdata.losses[-1]) }}</span></div>
+        {% if wdata.comms %}
+        <div class="stat-row"><span class="stat-label">Avg PS latency</span><span class="stat-val cyan">{{ "%.1f"|format(wdata.comms|sum / wdata.comms|length) }}ms</span></div>
+        {% endif %}
+      </div>
+      {% endif %}
+    {% endfor %}
   </div>
 
   <div style="text-align:center;">
@@ -658,31 +661,39 @@ def api_status():
 
 @app.route("/analytics")
 def analytics_page():
-    workers   = load_all_worker_histories()
+    workers = load_all_worker_histories()
     ps_rounds, ps_losses = load_ps_loss_history()
 
     if not workers and not ps_rounds:
         return render_template_string(ANALYTICS_HTML,
             nav=nav_header("analytics"), has_data=False,
             num_workers=0, total_epochs=0, best_rmse=0,
-            final_loss=0, w0_rmse=[], w1_rmse=[],
-            w0_loss=[], w1_loss=[], w0_comm=[], w1_comm=[],
+            final_loss=0, worker_chart_data={},
             ps_rounds=[], ps_losses=[],
             max_epochs=1, rmse_max=1, rmse_min=0,
             loss_max=1, loss_min=0, comm_max=100, comm_min=0)
 
-    w0 = workers.get(0, {})
-    w1 = workers.get(1, {})
-    w0_rmse  = w0.get("rmses", [])
-    w0_loss  = w0.get("losses", [])
-    w0_comm  = w0.get("comms", [])
-    w1_rmse  = w1.get("rmses", [])
-    w1_loss  = w1.get("losses", [])
-    w1_comm  = w1.get("comms", [])
+    # Build dynamic per-worker chart data
+    COLORS = ["#00e5ff", "#00ff9d", "#f97316", "#a78bfa"]
+    DASHES = ["", "8 4", "4 4", "12 3"]
 
-    all_rmse = w0_rmse + w1_rmse
-    all_loss = w0_loss + w1_loss
-    all_comm = [c for c in w0_comm + w1_comm if c > 0]
+    worker_chart_data = {}
+    all_rmse, all_loss, all_comm = [], [], []
+
+    for wid, wdata in workers.items():
+        rmses  = wdata.get("rmses", [])
+        losses = wdata.get("losses", [])
+        comms  = [c for c in wdata.get("comms", []) if c > 0]
+        worker_chart_data[wid] = {
+            "rmses":  rmses,
+            "losses": losses,
+            "comms":  comms,
+            "color":  COLORS[wid % len(COLORS)],
+            "dash":   DASHES[wid % len(DASHES)],
+        }
+        all_rmse += rmses
+        all_loss += losses
+        all_comm += comms
 
     rmse_max = max(all_rmse) * 1.05 if all_rmse else 1
     rmse_min = min(all_rmse) * 0.95 if all_rmse else 0
@@ -691,19 +702,17 @@ def analytics_page():
     comm_max = max(all_comm) * 1.1  if all_comm else 100
     comm_min = min(all_comm) * 0.9  if all_comm else 0
 
-    max_epochs   = max(len(w0_rmse), len(w1_rmse), 1)
+    max_epochs   = max((len(w["rmses"]) for w in worker_chart_data.values()), default=1)
     num_workers  = len(workers)
     total_epochs = sum(len(w.get("rmses", [])) for w in workers.values())
     best_rmse    = min(all_rmse) if all_rmse else 0
-    final_loss   = ps_losses[-1] if ps_losses else (w0_loss[-1] if w0_loss else 0)
+    final_loss   = ps_losses[-1] if ps_losses else (all_loss[-1] if all_loss else 0)
 
     return render_template_string(ANALYTICS_HTML,
         nav=nav_header("analytics"), has_data=True,
         num_workers=num_workers, total_epochs=total_epochs,
         best_rmse=best_rmse, final_loss=final_loss,
-        w0_rmse=w0_rmse, w1_rmse=w1_rmse,
-        w0_loss=w0_loss, w1_loss=w1_loss,
-        w0_comm=w0_comm, w1_comm=w1_comm,
+        worker_chart_data=worker_chart_data,
         ps_rounds=ps_rounds, ps_losses=ps_losses,
         max_epochs=max_epochs,
         rmse_max=rmse_max, rmse_min=rmse_min,
@@ -795,9 +804,9 @@ def upload_dataset():
                     blob_results.append(f"✅ shard_{i}.csv → Azure Blob ({len(shard):,} rows)")
                 else:
                     blob_results.append(f"⚠️ shard_{i}.csv saved locally only — Blob error: {msg}")
+        # Tell PS how many workers to expect — resets PS for clean training session
         ps_request({"type": "set_num_workers", "num_workers": num_workers})
         print(f"[UPLOAD] Notified PS: expecting {num_workers} workers")
-        success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"        
         success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"
         return render_template_string(UPLOAD_HTML,
             nav=nav_header("upload"),

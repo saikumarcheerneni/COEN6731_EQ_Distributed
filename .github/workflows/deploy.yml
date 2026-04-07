@@ -86,7 +86,7 @@ jobs:
               -e LR=0.001 \
               -e MODE=sync \
               -e STRAGGLER_TIMEOUT=30 \
-              -e MAX_ROUNDS=500 \
+              -e MAX_ROUNDS=1000 \
               -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
               ${{ env.IMAGE_PS }}:latest &&
 
