@@ -81,7 +81,7 @@ jobs:
               --memory 512m \
               --memory-swap 512m \
               -p 50051:50051 \
-              -e NUM_WORKERS=2 \
+              -e NUM_WORKERS=${{ secrets.NUM_WORKERS }} \
               -e PS_PORT=50051 \
               -e LR=0.001 \
               -e MODE=sync \
@@ -109,18 +109,38 @@ jobs:
               ${{ env.IMAGE_WORKER }}:latest
           "
 
-      - name: Deploy Worker1 to eq-worker1 VM
+      - name: Deploy Worker1 + Worker2 + Worker3 to eq-worker1 VM
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no azureuser@${{ secrets.WORKER1_PUBLIC_IP }} "
             docker pull ${{ env.IMAGE_WORKER }}:latest &&
-            docker stop eq-worker1 2>/dev/null || true &&
-            docker rm   eq-worker1 2>/dev/null || true &&
+            docker stop eq-worker1 eq-worker2 eq-worker3 2>/dev/null || true &&
+            docker rm   eq-worker1 eq-worker2 eq-worker3 2>/dev/null || true &&
 
             docker run -d --name eq-worker1 \
               --restart always \
-              --memory 768m \
-              --memory-swap 768m \
+              --memory 512m \
+              --memory-swap 512m \
               -e WORKER_ID=1 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
+              ${{ env.IMAGE_WORKER }}:latest &&
+
+            docker run -d --name eq-worker2 \
+              --restart always \
+              --memory 512m \
+              --memory-swap 512m \
+              -e WORKER_ID=2 \
+              -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
+              -e PS_PORT=50051 \
+              -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
+              ${{ env.IMAGE_WORKER }}:latest &&
+
+            docker run -d --name eq-worker3 \
+              --restart always \
+              --memory 512m \
+              --memory-swap 512m \
+              -e WORKER_ID=3 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
               -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
