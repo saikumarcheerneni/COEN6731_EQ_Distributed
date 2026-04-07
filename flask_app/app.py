@@ -234,9 +234,16 @@ DASHBOARD_HTML = """<!DOCTYPE html><html><head>
     {% if status.get('stragglers') %}
     <span style="color:#ffc107;font-size:0.78rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">⚠ Straggler workers: {{ status['stragglers'] }}</span>
     {% endif %}
-    {% if status.get('done') %}
-    <span style="color:#00e5ff;font-size:0.78rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">✓ Training complete — {{ status.get('round',0) }} rounds</span>
-    {% endif %}
+   {% if status.get('done') %}
+    <span style="color:#00e5ff;font-size:0.78rem;margin-left:10px;font-family:'JetBrains Mono',monospace;">
+  ✓ Training complete —
+  {% if status.get('mode') == 'async' %}
+    {{ status.get('total_updates',0) }} gradient updates
+  {% else %}
+    {{ status.get('round',0) }} rounds
+  {% endif %}
+</span>
+{% endif %}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">

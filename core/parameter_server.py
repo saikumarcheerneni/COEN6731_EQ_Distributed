@@ -68,6 +68,12 @@ class ParameterServer:
             if self.mode == "async":
                 self._update([gradients])
                 self.total_updates += 1
+                self.round += 1
+                entry = {"round": self.round, "loss": round(float(loss), 6),
+                         "time": round(time.time() - self.start_time, 1)}
+                self.loss_history.append(entry)
+                if len(self.loss_history) > 100:
+                  self.loss_history = self.loss_history[-100:]
                 if self.total_updates >= MAX_ROUNDS:
                     self.done = True
                 return self.weights.copy()
