@@ -21,12 +21,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 DATA_SHARDS_DIR = Path("data_shards")
 OUTPUTS_DIR     = Path("outputs")
 
-WORKER_COLORS = {
-    0: {"line": "#00e5ff", "dash": ""},
-    1: {"line": "#00ff9d", "dash": "8 4"},
-    2: {"line": "#f97316", "dash": "4 4"},
-    3: {"line": "#a78bfa", "dash": "12 3"},
-}
+WORKER_COLORS = ["#00e5ff", "#00ff9d", "#f97316", "#a78bfa"]
+WORKER_DASHES = ["", "8 4", "4 4", "12 3"]
 
 def ps_request(msg):
     try:
@@ -44,6 +40,19 @@ def ps_request(msg):
     except Exception as e:
         return {"error": str(e)}
 
+def get_shard_count():
+    """Count actual shard files on disk — source of truth for worker count."""
+    if DATA_SHARDS_DIR.exists():
+        return len(list(DATA_SHARDS_DIR.glob("shard_*.csv")))
+    return 0
+
+def fix_worker_count(status):
+    """Override PS num_workers with actual shard count if higher."""
+    shard_count = get_shard_count()
+    if shard_count > status.get("num_workers", 0):
+        status["num_workers"] = shard_count
+    return status
+
 def upload_shard_to_blob(shard_df, shard_id):
     try:
         from azure.storage.blob import BlobServiceClient
@@ -54,6 +63,28 @@ def upload_shard_to_blob(shard_df, shard_id):
         return True, f"shard_{shard_id}.csv uploaded to Azure Blob"
     except Exception as e:
         return False, str(e)
+
+def cleanup_old_workers(num_workers):
+    """Delete history files for workers no longer in use."""
+    OUTPUTS_DIR.mkdir(exist_ok=True)
+    for wid in range(4):
+        if wid >= num_workers:
+            # Delete local
+            old_history = OUTPUTS_DIR / f"worker_{wid}_history.csv"
+            if old_history.exists():
+                old_history.unlink()
+            # Delete from Azure Blob
+            if AZURE_CONN_STR:
+                try:
+                    from azure.storage.blob import BlobServiceClient
+                    client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+                    blob = client.get_blob_client(
+                        container=CONTAINER_NAME,
+                        blob=f"worker_{wid}_history.csv"
+                    )
+                    blob.delete_blob()
+                except Exception:
+                    pass
 
 def load_csv_history(path):
     epochs, rmses, losses, comms = [], [], [], []
@@ -69,12 +100,17 @@ def load_csv_history(path):
     return epochs, rmses, losses, comms
 
 def load_all_worker_histories():
+    """Load history — download from Azure Blob first, then read local files."""
+    # Only load histories for workers that have shards
+    shard_count = get_shard_count()
+    max_workers = shard_count if shard_count > 0 else 4
+
     if AZURE_CONN_STR:
         try:
             from azure.storage.blob import BlobServiceClient
             client = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
             OUTPUTS_DIR.mkdir(exist_ok=True)
-            for wid in range(4):
+            for wid in range(max_workers):
                 blob_name = f"worker_{wid}_history.csv"
                 try:
                     blob = client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
@@ -87,7 +123,7 @@ def load_all_worker_histories():
             pass
 
     workers = {}
-    for wid in range(4):
+    for wid in range(max_workers):
         p = OUTPUTS_DIR / f"worker_{wid}_history.csv"
         if p.exists():
             epochs, rmses, losses, comms = load_csv_history(p)
@@ -421,7 +457,7 @@ ANALYTICS_HTML = """
     <div class="card"><div class="card-val yellow">{{ "%.4f"|format(final_loss) }}</div><div class="card-lbl">Final PS Loss</div></div>
   </div>
 
-  <!-- Chart 1: RMSE per worker — dynamic for 2/3/4 workers -->
+  <!-- Chart 1: RMSE per worker — dynamic -->
   <div class="panel">
     <div class="panel-title">// RMSE CONVERGENCE — PER WORKER</div>
     <div class="chart-area">
@@ -570,7 +606,7 @@ ANALYTICS_HTML = """
   </div>
   {% endif %}
 
-  <!-- Worker stats cards — dynamic for all workers -->
+  <!-- Worker stats cards — dynamic -->
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;margin-bottom:20px;">
     {% for wid, wdata in worker_chart_data.items() %}
       {% if wdata.rmses %}
@@ -605,6 +641,7 @@ def index():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
     elif "error" in status: status = {}
+    status = fix_worker_count(status)
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -621,6 +658,7 @@ def predict():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
     elif "error" in status: status = {}
+    status = fix_worker_count(status)
     prediction = None
     pred_error = None
     if "weights" in resp:
@@ -640,6 +678,7 @@ def start_training():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
     elif "error" in status: status = {}
+    status = fix_worker_count(status)
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -650,6 +689,7 @@ def stop_training():
     status = ps_request({"type": "get_status"})
     if "data" in status: status = status["data"]
     elif "error" in status: status = {}
+    status = fix_worker_count(status)
     return render_template_string(DASHBOARD_HTML,
         nav=nav_header("dashboard", status), status=status,
         prediction=None, pred_error=None,
@@ -673,7 +713,6 @@ def analytics_page():
             max_epochs=1, rmse_max=1, rmse_min=0,
             loss_max=1, loss_min=0, comm_max=100, comm_min=0)
 
-    # Build dynamic per-worker chart data
     COLORS = ["#00e5ff", "#00ff9d", "#f97316", "#a78bfa"]
     DASHES = ["", "8 4", "4 4", "12 3"]
 
@@ -789,6 +828,10 @@ def upload_dataset():
             df = df.iloc[:int(max_rows)]
         df = df.sample(frac=1, random_state=42).reset_index(drop=True)
         num_workers = int(request.form.get("num_workers", 2))
+
+        # Clean up old worker history files beyond selected worker count
+        cleanup_old_workers(num_workers)
+
         DATA_SHARDS_DIR.mkdir(exist_ok=True)
         for old in DATA_SHARDS_DIR.glob("shard_*.csv"):
             old.unlink()
@@ -804,9 +847,11 @@ def upload_dataset():
                     blob_results.append(f"✅ shard_{i}.csv → Azure Blob ({len(shard):,} rows)")
                 else:
                     blob_results.append(f"⚠️ shard_{i}.csv saved locally only — Blob error: {msg}")
-        # Tell PS how many workers to expect — resets PS for clean training session
+
+        # Tell PS how many workers to expect — resets PS for clean training
         ps_request({"type": "set_num_workers", "num_workers": num_workers})
         print(f"[UPLOAD] Notified PS: expecting {num_workers} workers")
+
         success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"
         return render_template_string(UPLOAD_HTML,
             nav=nav_header("upload"),

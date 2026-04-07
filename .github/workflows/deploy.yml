@@ -102,6 +102,8 @@ jobs:
               --restart always \
               --memory 400m \
               --memory-swap 400m \
+              -v /home/azureuser/data_shards:/app/data_shards \
+              -v /home/azureuser/outputs:/app/outputs \
               -e WORKER_ID=0 \
               -e PS_HOST=eq-ps \
               -e PS_PORT=50051 \
@@ -120,6 +122,8 @@ jobs:
               --restart always \
               --memory 300m \
               --memory-swap 300m \
+              -v /home/azureuser/data_shards:/app/data_shards \
+              -v /home/azureuser/outputs:/app/outputs \
               -e WORKER_ID=1 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
@@ -130,6 +134,8 @@ jobs:
               --restart always \
               --memory 300m \
               --memory-swap 300m \
+              -v /home/azureuser/data_shards:/app/data_shards \
+              -v /home/azureuser/outputs:/app/outputs \
               -e WORKER_ID=2 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
@@ -140,6 +146,8 @@ jobs:
               --restart always \
               --memory 300m \
               --memory-swap 300m \
+              -v /home/azureuser/data_shards:/app/data_shards \
+              -v /home/azureuser/outputs:/app/outputs \
               -e WORKER_ID=3 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
@@ -153,12 +161,15 @@ jobs:
             docker pull ${{ env.IMAGE_WEB }}:latest &&
             docker stop eq-web 2>/dev/null || true &&
             docker rm   eq-web 2>/dev/null || true &&
+            mkdir -p /home/azureuser/data_shards /home/azureuser/outputs &&
 
             docker run -d --name eq-web \
               --restart always \
               --memory 1g \
               --memory-swap 1g \
               -p 80:5000 \
+              -v /home/azureuser/data_shards:/app/data_shards \
+              -v /home/azureuser/outputs:/app/outputs \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
               -e FLASK_PORT=5000 \
