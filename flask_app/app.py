@@ -1,7 +1,7 @@
 """
 flask_app/app.py
 Live Earthquake Distributed Training Dashboard
-Enhanced: CSV Upload + Azure Blob Storage + Training Analytics Charts
+Enhanced: CSV Upload + Azure Blob Storage + Training Analytics Charts + Latency
 """
 from flask import Flask, render_template_string, jsonify, request, redirect, url_for
 import json, socket, os, time, csv, math
@@ -49,20 +49,20 @@ def upload_shard_to_blob(shard_df, shard_id):
         return False, str(e)
 
 def load_csv_history(path):
-    epochs, rmses, losses = [], [], []
+    epochs, rmses, losses, comms = [], [], [], []
     if not path.exists():
-        return epochs, rmses, losses
+        return epochs, rmses, losses, comms
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             epochs.append(int(row.get("epoch", 0)))
             rmses.append(float(row.get("rmse", 0)))
             losses.append(float(row.get("loss", 0)))
-    return epochs, rmses, losses
+            comms.append(float(row.get("avg_comm_ms", 0)))
+    return epochs, rmses, losses, comms
 
 def load_all_worker_histories():
     """Load history — download from Azure Blob first, then read local files."""
-    # Try to download latest history from Azure Blob
     if AZURE_CONN_STR:
         try:
             from azure.storage.blob import BlobServiceClient
@@ -77,7 +77,7 @@ def load_all_worker_histories():
                     with open(local_path, "wb") as f:
                         f.write(blob.download_blob().readall())
                 except Exception:
-                    pass  
+                    pass
         except Exception:
             pass
 
@@ -85,9 +85,9 @@ def load_all_worker_histories():
     for wid in range(4):
         p = OUTPUTS_DIR / f"worker_{wid}_history.csv"
         if p.exists():
-            epochs, rmses, losses = load_csv_history(p)
+            epochs, rmses, losses, comms = load_csv_history(p)
             if epochs:
-                workers[wid] = {"epochs": epochs, "rmses": rmses, "losses": losses}
+                workers[wid] = {"epochs": epochs, "rmses": rmses, "losses": losses, "comms": comms}
     return workers
 
 def load_ps_loss_history():
@@ -410,52 +410,35 @@ ANALYTICS_HTML = """
   </div>
   {% else %}
 
-  <!-- Summary cards -->
   <div class="grid">
-    <div class="card">
-      <div class="card-val cyan">{{ num_workers }}</div>
-      <div class="card-lbl">Workers Trained</div>
-    </div>
-    <div class="card">
-      <div class="card-val green">{{ total_epochs }}</div>
-      <div class="card-lbl">Total Epochs</div>
-    </div>
-    <div class="card">
-      <div class="card-val purple">{{ "%.4f"|format(best_rmse) }}</div>
-      <div class="card-lbl">Best RMSE</div>
-    </div>
-    <div class="card">
-      <div class="card-val yellow">{{ "%.4f"|format(final_loss) }}</div>
-      <div class="card-lbl">Final PS Loss</div>
-    </div>
+    <div class="card"><div class="card-val cyan">{{ num_workers }}</div><div class="card-lbl">Workers Trained</div></div>
+    <div class="card"><div class="card-val green">{{ total_epochs }}</div><div class="card-lbl">Total Epochs</div></div>
+    <div class="card"><div class="card-val purple">{{ "%.4f"|format(best_rmse) }}</div><div class="card-lbl">Best RMSE</div></div>
+    <div class="card"><div class="card-val yellow">{{ "%.4f"|format(final_loss) }}</div><div class="card-lbl">Final PS Loss</div></div>
   </div>
 
-  <!-- Chart 1: RMSE per worker over epochs -->
+  <!-- Chart 1: RMSE per worker -->
   <div class="panel">
     <div class="panel-title">// RMSE CONVERGENCE — PER WORKER</div>
     <div class="chart-area">
       <svg width="100%" height="260" viewBox="0 0 800 260" preserveAspectRatio="xMidYMid meet">
-        <!-- Grid lines -->
         {% for i in range(5) %}
         <line x1="60" y1="{{ 20+i*55 }}" x2="780" y2="{{ 20+i*55 }}" stroke="#1a2a45" stroke-width="0.5"/>
         <text x="50" y="{{ 24+i*55 }}" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="end">
           {{ "%.3f"|format(rmse_max - i*(rmse_max-rmse_min)/4) }}
         </text>
         {% endfor %}
-        <!-- X axis labels -->
         {% for i in range(0, max_epochs, [1, max_epochs//5]|max) %}
         <text x="{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}" y="255"
           fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
         {% endfor %}
         <text x="420" y="275" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">Epoch</text>
-        <!-- Worker 0 line — cyan -->
         {% if w0_rmse %}
         <polyline fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
           points="{% for i in range(w0_rmse|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(rmse_max-w0_rmse[i])/(rmse_max-rmse_min+0.0001)*220 }} {% endfor %}"/>
         <circle cx="{{ 60+(w0_rmse|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
           cy="{{ 20+(rmse_max-w0_rmse[-1])/(rmse_max-rmse_min+0.0001)*220 }}" r="4" fill="#00e5ff"/>
         {% endif %}
-        <!-- Worker 1 line — green -->
         {% if w1_rmse %}
         <polyline fill="none" stroke="#00ff9d" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
           stroke-dasharray="8 4"
@@ -471,7 +454,7 @@ ANALYTICS_HTML = """
     </div>
   </div>
 
-  <!-- Chart 2: Loss per worker over epochs -->
+  <!-- Chart 2: Loss per worker -->
   <div class="panel">
     <div class="panel-title">// TRAINING LOSS — PER WORKER</div>
     <div class="chart-area">
@@ -508,7 +491,7 @@ ANALYTICS_HTML = """
     </div>
   </div>
 
-  <!-- Chart 3: PS loss history (rounds) -->
+  <!-- Chart 3: PS loss by round -->
   {% if ps_rounds %}
   <div class="panel">
     <div class="panel-title">// PARAMETER SERVER LOSS — BY ROUND</div>
@@ -537,6 +520,45 @@ ANALYTICS_HTML = """
   </div>
   {% endif %}
 
+  <!-- Chart 4: Communication Latency -->
+  {% if w0_comm or w1_comm %}
+  <div class="panel">
+    <div class="panel-title">// PS COMMUNICATION LATENCY — PER EPOCH (ms)</div>
+    <div class="chart-area">
+      <svg width="100%" height="260" viewBox="0 0 800 260" preserveAspectRatio="xMidYMid meet">
+        {% for i in range(5) %}
+        <line x1="60" y1="{{ 20+i*55 }}" x2="780" y2="{{ 20+i*55 }}" stroke="#1a2a45" stroke-width="0.5"/>
+        <text x="50" y="{{ 24+i*55 }}" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="end">
+          {{ "%.1f"|format(comm_max - i*(comm_max-comm_min)/4) }}ms
+        </text>
+        {% endfor %}
+        {% for i in range(0, max_epochs, [1, max_epochs//5]|max) %}
+        <text x="{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}" y="255"
+          fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">{{ i+1 }}</text>
+        {% endfor %}
+        <text x="420" y="275" fill="#45556e" font-family="JetBrains Mono" font-size="9" text-anchor="middle">Epoch</text>
+        {% if w0_comm %}
+        <polyline fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+          points="{% for i in range(w0_comm|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(comm_max-w0_comm[i])/(comm_max-comm_min+0.0001)*220 }} {% endfor %}"/>
+        <circle cx="{{ 60+(w0_comm|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
+          cy="{{ 20+(comm_max-w0_comm[-1])/(comm_max-comm_min+0.0001)*220 }}" r="4" fill="#00e5ff"/>
+        {% endif %}
+        {% if w1_comm %}
+        <polyline fill="none" stroke="#f97316" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+          stroke-dasharray="8 4"
+          points="{% for i in range(w1_comm|length) %}{{ 60+i*(720/(max_epochs-1 if max_epochs > 1 else 1)) }},{{ 20+(comm_max-w1_comm[i])/(comm_max-comm_min+0.0001)*220 }} {% endfor %}"/>
+        <circle cx="{{ 60+(w1_comm|length-1)*(720/(max_epochs-1 if max_epochs > 1 else 1)) }}"
+          cy="{{ 20+(comm_max-w1_comm[-1])/(comm_max-comm_min+0.0001)*220 }}" r="4" fill="#f97316"/>
+        {% endif %}
+      </svg>
+    </div>
+    <div class="chart-legend">
+      {% if w0_comm %}<div class="legend-item"><div class="legend-dot" style="background:#00e5ff;"></div>Worker 0 — Avg latency: {{ "%.1f"|format(w0_comm|sum / w0_comm|length) }}ms</div>{% endif %}
+      {% if w1_comm %}<div class="legend-item"><div class="legend-dot" style="background:#f97316;"></div>Worker 1 — Avg latency: {{ "%.1f"|format(w1_comm|sum / w1_comm|length) }}ms</div>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Worker stats table -->
   <div class="two-col">
     {% if w0_rmse %}
@@ -548,6 +570,7 @@ ANALYTICS_HTML = """
       <div class="stat-row"><span class="stat-label">RMSE improvement</span><span class="stat-val green">{{ "%.1f"|format((1-w0_rmse[-1]/w0_rmse[0])*100) }}%</span></div>
       <div class="stat-row"><span class="stat-label">Initial loss</span><span class="stat-val">{{ "%.4f"|format(w0_loss[0]) }}</span></div>
       <div class="stat-row"><span class="stat-label">Final loss</span><span class="stat-val orange">{{ "%.4f"|format(w0_loss[-1]) }}</span></div>
+      {% if w0_comm %}<div class="stat-row"><span class="stat-label">Avg PS latency</span><span class="stat-val cyan">{{ "%.1f"|format(w0_comm|sum / w0_comm|length) }}ms</span></div>{% endif %}
     </div>
     {% endif %}
     {% if w1_rmse %}
@@ -559,6 +582,7 @@ ANALYTICS_HTML = """
       <div class="stat-row"><span class="stat-label">RMSE improvement</span><span class="stat-val green">{{ "%.1f"|format((1-w1_rmse[-1]/w1_rmse[0])*100) }}%</span></div>
       <div class="stat-row"><span class="stat-label">Initial loss</span><span class="stat-val">{{ "%.4f"|format(w1_loss[0]) }}</span></div>
       <div class="stat-row"><span class="stat-label">Final loss</span><span class="stat-val purple">{{ "%.4f"|format(w1_loss[-1]) }}</span></div>
+      {% if w1_comm %}<div class="stat-row"><span class="stat-label">Avg PS latency</span><span class="stat-val cyan">{{ "%.1f"|format(w1_comm|sum / w1_comm|length) }}ms</span></div>{% endif %}
     </div>
     {% endif %}
   </div>
@@ -642,30 +666,36 @@ def analytics_page():
             nav=nav_header("analytics"), has_data=False,
             num_workers=0, total_epochs=0, best_rmse=0,
             final_loss=0, w0_rmse=[], w1_rmse=[],
-            w0_loss=[], w1_loss=[], ps_rounds=[], ps_losses=[],
+            w0_loss=[], w1_loss=[], w0_comm=[], w1_comm=[],
+            ps_rounds=[], ps_losses=[],
             max_epochs=1, rmse_max=1, rmse_min=0,
-            loss_max=1, loss_min=0)
+            loss_max=1, loss_min=0, comm_max=100, comm_min=0)
 
     w0 = workers.get(0, {})
     w1 = workers.get(1, {})
     w0_rmse  = w0.get("rmses", [])
     w0_loss  = w0.get("losses", [])
+    w0_comm  = w0.get("comms", [])
     w1_rmse  = w1.get("rmses", [])
     w1_loss  = w1.get("losses", [])
+    w1_comm  = w1.get("comms", [])
 
     all_rmse = w0_rmse + w1_rmse
     all_loss = w0_loss + w1_loss
+    all_comm = [c for c in w0_comm + w1_comm if c > 0]
 
     rmse_max = max(all_rmse) * 1.05 if all_rmse else 1
     rmse_min = min(all_rmse) * 0.95 if all_rmse else 0
     loss_max = max(all_loss) * 1.05 if all_loss else 1
     loss_min = min(all_loss) * 0.95 if all_loss else 0
+    comm_max = max(all_comm) * 1.1  if all_comm else 100
+    comm_min = min(all_comm) * 0.9  if all_comm else 0
 
-    max_epochs  = max(len(w0_rmse), len(w1_rmse), 1)
-    num_workers = len(workers)
+    max_epochs   = max(len(w0_rmse), len(w1_rmse), 1)
+    num_workers  = len(workers)
     total_epochs = sum(len(w.get("rmses", [])) for w in workers.values())
-    best_rmse   = min(all_rmse) if all_rmse else 0
-    final_loss  = ps_losses[-1] if ps_losses else (w0_loss[-1] if w0_loss else 0)
+    best_rmse    = min(all_rmse) if all_rmse else 0
+    final_loss   = ps_losses[-1] if ps_losses else (w0_loss[-1] if w0_loss else 0)
 
     return render_template_string(ANALYTICS_HTML,
         nav=nav_header("analytics"), has_data=True,
@@ -673,10 +703,12 @@ def analytics_page():
         best_rmse=best_rmse, final_loss=final_loss,
         w0_rmse=w0_rmse, w1_rmse=w1_rmse,
         w0_loss=w0_loss, w1_loss=w1_loss,
+        w0_comm=w0_comm, w1_comm=w1_comm,
         ps_rounds=ps_rounds, ps_losses=ps_losses,
         max_epochs=max_epochs,
         rmse_max=rmse_max, rmse_min=rmse_min,
-        loss_max=loss_max, loss_min=loss_min)
+        loss_max=loss_max, loss_min=loss_min,
+        comm_max=comm_max, comm_min=comm_min)
 
 @app.route("/api/analytics")
 def api_analytics():
