@@ -84,8 +84,9 @@ jobs:
               -e NUM_WORKERS=2 \
               -e PS_PORT=50051 \
               -e LR=0.001 \
+              -e MODE=sync \
               -e STRAGGLER_TIMEOUT=30 \
-              -e MAX_ROUNDS=5000 \
+              -e MAX_ROUNDS=500 \
               -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
               ${{ env.IMAGE_PS }}:latest &&
 
@@ -98,7 +99,7 @@ jobs:
 
             docker run -d --name eq-worker0 \
               --network eq-net \
-              --restart on-failure \
+              --restart always \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=0 \
@@ -116,7 +117,7 @@ jobs:
             docker rm   eq-worker1 2>/dev/null || true &&
 
             docker run -d --name eq-worker1 \
-              --restart on-failure \
+              --restart always \
               --memory 768m \
               --memory-swap 768m \
               -e WORKER_ID=1 \
