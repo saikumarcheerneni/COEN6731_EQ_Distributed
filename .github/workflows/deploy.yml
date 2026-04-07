@@ -84,7 +84,7 @@ jobs:
               -e NUM_WORKERS=2 \
               -e PS_PORT=50051 \
               -e LR=0.001 \
-              -e MODE=sync \
+              -e MODE=async \
               -e STRAGGLER_TIMEOUT=30 \
               -e MAX_ROUNDS=500 \
               -e AZURE_STORAGE_CONNECTION_STRING=\"\$(base64 -d /tmp/az_b64.txt)\" \
