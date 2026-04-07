@@ -35,6 +35,21 @@ class ParameterServer:
         self.done          = False
         threading.Thread(target=self._memory_watchdog, daemon=True).start()
 
+    def set_num_workers(self, n):
+        with self.lock:
+            old = self.num_workers
+            self.num_workers = n
+            self.grad_buffer.clear()
+            self.stragglers.clear()
+            self.last_seen.clear()
+            self.round         = 0
+            self.total_updates = 0
+            self.loss_history  = []
+            self.weights       = np.zeros(NUM_FEATURES + 1, dtype=np.float32)
+            self.done          = False
+            self.start_time    = time.time()
+            log.info(f"Worker count changed {old} → {n}. PS state reset.")
+
     def push_gradients(self, worker_id, gradients, loss):
         with self.lock:
             self.grad_buffer[worker_id] = gradients
@@ -74,7 +89,6 @@ class ParameterServer:
     def _update(self, grads):
         self.weights -= LEARNING_RATE * np.mean(grads, axis=0)
 
-    # ── NEW: memory watchdog ──────────────────────────────────────
     def _memory_watchdog(self):
         while True:
             time.sleep(MEMORY_LOG_INTERVAL)
@@ -111,12 +125,11 @@ class ParameterServer:
                     "uptime": round(time.time() - self.start_time, 1),
                     "mode": self.mode, "done": self.done}
 
-# ── NEW: fixed handle_client ──────────────────────────────────────
 def handle_client(conn, addr, ps):
     data = b""
     try:
         while True:
-            chunk = conn.recv(65536)          # was 4096 — too small
+            chunk = conn.recv(65536)
             if not chunk: break
             data += chunk
             try:
@@ -128,8 +141,12 @@ def handle_client(conn, addr, ps):
                 elif msg_type == "get_weights":
                     w = ps.get_weights()
                     conn.sendall(json.dumps({"type": "weights", "weights": w.tolist(), "done": ps.done}).encode())
-                elif msg_type in ("get_status", "stats"):  # "stats" alias for master.py
+                elif msg_type in ("get_status", "stats"):
                     conn.sendall(json.dumps({"type": "status", "data": ps.get_status()}).encode())
+                elif msg_type == "set_num_workers":
+                    n = int(msg.get("num_workers", 2))
+                    ps.set_num_workers(n)
+                    conn.sendall(json.dumps({"type": "ok", "num_workers": n}).encode())
                 data = b""
             except json.JSONDecodeError: continue
     except Exception as e: log.error(f"{addr}: {e}")
@@ -140,7 +157,7 @@ def run_server(num_workers=NUM_WORKERS, mode=os.environ.get("MODE", "sync")):
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((PS_HOST, PS_PORT))
-    srv.listen(50)                            # was 10 — too low for multiple users
+    srv.listen(50)
     log.info(f"PS online :{PS_PORT} | workers={num_workers} | mode={mode} | max_rounds={MAX_ROUNDS}")
     while True:
         conn, addr = srv.accept()

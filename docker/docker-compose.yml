@@ -10,7 +10,7 @@ services:
     container_name: eq-ps
     environment:
       - PS_PORT=50051
-      - NUM_WORKERS=2
+      - NUM_WORKERS=${NUM_WORKERS:-2}
       - LR=0.001
       - STRAGGLER_TIMEOUT=30
       - MAX_ROUNDS=1000
@@ -22,7 +22,7 @@ services:
     mem_limit: 512m
     memswap_limit: 512m
 
-  # ── Worker 0 ──────────────────────────────────────
+  # ── Worker 0 (always runs) ────────────────────────
   eq-worker0:
     build:
       context: ..
@@ -44,7 +44,7 @@ services:
     mem_limit: 768m
     memswap_limit: 768m
 
-  # ── Worker 1 ──────────────────────────────────────
+  # ── Worker 1 (always runs) ────────────────────────
   eq-worker1:
     build:
       context: ..
@@ -65,6 +65,55 @@ services:
     restart: on-failure
     mem_limit: 768m
     memswap_limit: 768m
+
+  # ── Worker 2 (starts with NUM_WORKERS=3 or 4) ────
+  eq-worker2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: eq-worker2
+    environment:
+      - PS_HOST=eq-ps
+      - PS_PORT=50051
+      - WORKER_ID=2
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+    depends_on:
+      - eq-ps
+    networks:
+      - eq-net
+    volumes:
+      - ./data_shards:/app/data_shards
+      - ./outputs:/app/outputs
+    restart: on-failure
+    mem_limit: 768m
+    memswap_limit: 768m
+    profiles:
+      - workers3
+      - workers4
+
+  # ── Worker 3 (starts with NUM_WORKERS=4 only) ────
+  eq-worker3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: eq-worker3
+    environment:
+      - PS_HOST=eq-ps
+      - PS_PORT=50051
+      - WORKER_ID=3
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+    depends_on:
+      - eq-ps
+    networks:
+      - eq-net
+    volumes:
+      - ./data_shards:/app/data_shards
+      - ./outputs:/app/outputs
+    restart: on-failure
+    mem_limit: 768m
+    memswap_limit: 768m
+    profiles:
+      - workers4
 
   # ── Flask Website ─────────────────────────────────
   eq-web:

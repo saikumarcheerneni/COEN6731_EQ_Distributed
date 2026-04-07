@@ -795,6 +795,9 @@ def upload_dataset():
                     blob_results.append(f"✅ shard_{i}.csv → Azure Blob ({len(shard):,} rows)")
                 else:
                     blob_results.append(f"⚠️ shard_{i}.csv saved locally only — Blob error: {msg}")
+        ps_request({"type": "set_num_workers", "num_workers": num_workers})
+        print(f"[UPLOAD] Notified PS: expecting {num_workers} workers")
+        success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"        
         success_msg = f"'{filename}' uploaded → {num_workers} shards created ({len(df):,} total rows)"
         return render_template_string(UPLOAD_HTML,
             nav=nav_header("upload"),
