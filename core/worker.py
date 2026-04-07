@@ -83,6 +83,14 @@ def send_recv(host, port, msg, timeout=30):
     return {}
 
 
+def send_recv_timed(host, port, msg, timeout=30):
+    """Send message and return (response, comm_time_ms)."""
+    t_start = time.time()
+    resp    = send_recv(host, port, msg, timeout)
+    comm_ms = (time.time() - t_start) * 1000
+    return resp, comm_ms
+
+
 def connect_to_ps(worker_id):
     """Retry PS connection forever. Skip if PS is still in done state."""
     log     = logging.getLogger("W")
@@ -133,12 +141,12 @@ def train_once(worker_id, epochs, batch_size, straggler_delay):
     if ckpt.exists():
         ckpt.unlink()
 
-    # Connect to PS — waits until PS is ready and not in done state
     w = connect_to_ps(worker_id)
 
-    rmse    = 0.0
-    history = []
-    ps_done = False
+    rmse         = 0.0
+    history      = []
+    ps_done      = False
+    comm_times   = []   # track PS communication latency
 
     for epoch in range(1, epochs + 1):
 
@@ -161,14 +169,14 @@ def train_once(worker_id, epochs, batch_size, straggler_delay):
             reconnect_wait = RECONNECT_BASE
             for _ in range(20):
                 try:
-                    resp = send_recv(PS_HOST, PS_PORT, {
+                    resp, comm_ms = send_recv_timed(PS_HOST, PS_PORT, {
                         "type":      "push_gradients",
                         "worker_id": worker_id,
                         "gradients": grads.tolist(),
                         "loss":      loss
                     })
+                    comm_times.append(comm_ms)
                     w = np.array(resp["weights"], dtype=np.float32)
-                    # Mark done — but finish this epoch first
                     if resp.get("done"):
                         ps_done = True
                     break
@@ -177,25 +185,27 @@ def train_once(worker_id, epochs, batch_size, straggler_delay):
                     time.sleep(reconnect_wait)
                     reconnect_wait = min(reconnect_wait * 2, MAX_RECONNECT_WAIT)
 
-        # Epoch complete
         avg_loss = epoch_loss / batches
         rmse     = float(np.sqrt(np.mean((predict(Xs, w) - ys)**2)))
-        log.info(f"Epoch {epoch}/{epochs} | loss={avg_loss:.4f} | RMSE={rmse:.4f}")
-        history.append({"epoch": epoch, "loss": avg_loss, "rmse": rmse})
+        avg_comm = sum(comm_times[-batches:]) / max(len(comm_times[-batches:]), 1)
+        log.info(f"Epoch {epoch}/{epochs} | loss={avg_loss:.4f} | RMSE={rmse:.4f} | avg_comm={avg_comm:.1f}ms")
+        history.append({"epoch": epoch, "loss": avg_loss, "rmse": rmse, "avg_comm_ms": round(avg_comm, 2)})
 
-        # Save checkpoint
         np.save(ckpt, {"epoch": epoch, "weights": w.tolist(), "history": history})
 
-        # Upload history to Azure Blob after every epoch — feeds the charts
         out = Path("outputs"); out.mkdir(exist_ok=True)
         history_path = out / f"worker_{worker_id}_history.csv"
         pd.DataFrame(history).to_csv(history_path, index=False)
         _upload_history_to_blob(worker_id, history_path)
 
-        # Exit cleanly after finishing this epoch
         if ps_done:
             log.info("PS training complete — saved history and exiting epoch loop.")
             break
+
+    # Log overall communication stats
+    if comm_times:
+        log.info(f"PS comm stats — avg: {sum(comm_times)/len(comm_times):.1f}ms | "
+                 f"min: {min(comm_times):.1f}ms | max: {max(comm_times):.1f}ms")
 
     log.info(f"Session complete | final RMSE={rmse:.4f}")
     _save_outputs(worker_id, w, history)
@@ -214,7 +224,7 @@ def run_forever(worker_id, epochs, batch_size, straggler_delay):
     """
     Run training sessions forever.
     After each session — wait for PS to restart then retrain.
-    This means VM restart = automatic retraining. No manual steps needed.
+    VM restart = automatic retraining. No manual steps needed.
     """
     log     = logging.getLogger("W")
     session = 0
@@ -232,7 +242,6 @@ def run_forever(worker_id, epochs, batch_size, straggler_delay):
 
         log.info("Session complete. Waiting for PS to restart for next session...")
 
-        # Wait until PS resets (round goes back to 0 and done=False)
         while True:
             try:
                 resp = send_recv(PS_HOST, PS_PORT, {"type": "get_status"}, timeout=10)
