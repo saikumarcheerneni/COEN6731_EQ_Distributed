@@ -81,7 +81,7 @@ jobs:
               --memory 512m \
               --memory-swap 512m \
               -p 50051:50051 \
-              -e NUM_WORKERS=${{ secrets.NUM_WORKERS }} \
+              -e NUM_WORKERS=4 \
               -e PS_PORT=50051 \
               -e LR=0.001 \
               -e MODE=sync \
@@ -100,8 +100,8 @@ jobs:
             docker run -d --name eq-worker0 \
               --network eq-net \
               --restart always \
-              --memory 768m \
-              --memory-swap 768m \
+              --memory 400m \
+              --memory-swap 400m \
               -e WORKER_ID=0 \
               -e PS_HOST=eq-ps \
               -e PS_PORT=50051 \
@@ -118,8 +118,8 @@ jobs:
 
             docker run -d --name eq-worker1 \
               --restart always \
-              --memory 512m \
-              --memory-swap 512m \
+              --memory 300m \
+              --memory-swap 300m \
               -e WORKER_ID=1 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
@@ -128,8 +128,8 @@ jobs:
 
             docker run -d --name eq-worker2 \
               --restart always \
-              --memory 512m \
-              --memory-swap 512m \
+              --memory 300m \
+              --memory-swap 300m \
               -e WORKER_ID=2 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
@@ -138,8 +138,8 @@ jobs:
 
             docker run -d --name eq-worker3 \
               --restart always \
-              --memory 512m \
-              --memory-swap 512m \
+              --memory 300m \
+              --memory-swap 300m \
               -e WORKER_ID=3 \
               -e PS_HOST=${{ secrets.PS_PRIVATE_IP }} \
               -e PS_PORT=50051 \
