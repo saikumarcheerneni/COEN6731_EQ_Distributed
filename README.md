@@ -310,6 +310,15 @@ The system automatically drops any other columns and removes rows with missing v
 
 **Dataset used in evaluation:** USGS earthquake dataset — 797,178 records, 83 MB.
 
+### Download Dataset
+
+**USGS Earthquake Dataset** used in this project:
+
+- 📊 Records: 797,178 rows  
+- 💾 Size: 83 MB  
+- 📁 Format: CSV  
+
+📥 **https://drive.google.com/file/d/1Lp_HcloHc-cmgCdxEYgnfNIVpF4S3p3v/view?usp=sharing**
 ---
 
 ## Training Modes
