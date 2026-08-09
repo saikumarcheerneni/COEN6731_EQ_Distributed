@@ -2,7 +2,14 @@
 name = "coen6731-eq-distributed"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "flask>=3.0.0",
+    "werkzeug>=3.0.0",
+    "azure-storage-blob>=12.19.0",
+]
 
 [tool.vercel]
 entrypoint = "flask_app.app:app"
