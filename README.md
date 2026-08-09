@@ -6,7 +6,7 @@ Trains a linear regression model to predict earthquake magnitude across multiple
 
 > **Course:** COEN 6731 — Distributed Software Systems, Winter 2026  
 > **Institution:** Concordia University, Montreal, Canada  
-> **Team:** Saikumar Cheerneni (40323643) · Varshit Beesetti (40326466)  
+> **Team:** Saikumar Cheerneni (40323643)
 > **Topic:** Distributed Training System
 
 ---
